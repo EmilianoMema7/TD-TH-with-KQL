@@ -1,0 +1,66 @@
+//Qilin EDR killer IOCs by Talos
+//https://blog.talosintelligence.com/qilin-edr-killer/
+
+let sha256_iocs = dynamic([
+  "7787da25451f5538766240f4a8a2846d0a589c59391e15f188aa077e8b888497", // msimg32.dll
+  "16f83f056177c4ec24c7e99d01ca9d9d6713bd0497eeedb777a3ffefa99c97f0", // rwdrv.sys
+  "bd1f381e5a3db22e88776b7873d4d2835e9a1ec620571d2b1da0c58f81c84a56", // hlpdrv.sys
+  "12fcde06ddadf1b48a61b12596e6286316fd33e850687fe4153dfd9383f0a4a0"  // EDRKiller.exe
+]);
+let sha1_iocs = dynamic([
+  "01d00d3dd8bc8fd92dae9e04d0f076cb3158dc9c",
+  "82ed942a52cdcf120a8919730e00ba37619661a3",
+  "ce1b9909cef820e5281618a7a0099a27a70643dc",
+  "84e2d2084fe08262c2c378a377963a1482b35ac5"
+]);
+let md5_iocs = dynamic([
+  "89ee7235906f7d12737679860264feaf",
+  "6bc8e3505d9f51368ddf323acb6abc49",
+  "cf7cad39407d8cd93135be42b6bd258f",
+  "1305e8b0f9c459d5ed85e7e474fbebb1"
+]);
+let file_iocs = dynamic([
+  "msimg32.dll",
+  "rwdrv.sys",
+  "hlpdrv.sys",
+  "EDRKiller.exe"
+]);
+union isfuzzy=true
+(
+    DeviceFileEvents
+    | extend EventTable = "DeviceFileEvents"
+    | project Timestamp, DeviceName, EventTable, ActionType, FileName, FolderPath, SHA1, SHA256, MD5,
+              InitiatingProcessFileName, InitiatingProcessCommandLine, ReportId
+),
+(
+    DeviceImageLoadEvents
+    | extend EventTable = "DeviceImageLoadEvents"
+    | project Timestamp, DeviceName, EventTable, ActionType, FileName, FolderPath, SHA1, SHA256, MD5,
+              InitiatingProcessFileName, InitiatingProcessCommandLine, ReportId
+),
+(
+    DeviceProcessEvents
+    | extend EventTable = "DeviceProcessEvents"
+    | project Timestamp, DeviceName, EventTable, ActionType, FileName, FolderPath, SHA1, SHA256, MD5,
+              InitiatingProcessFileName, InitiatingProcessCommandLine, ReportId
+)
+| where SHA256 in (sha256_iocs)
+    or SHA1 in (sha1_iocs)
+    or MD5 in (md5_iocs)
+    or FileName in~ (file_iocs)
+| extend MatchReason =
+    case(
+        SHA256 in (sha256_iocs), "SHA256 IOC",
+        SHA1 in (sha1_iocs), "SHA1 IOC",
+        MD5 in (md5_iocs), "MD5 IOC",
+        FileName in~ (file_iocs), "Filename IOC",
+        "Unknown"
+    )
+| extend SuspicionNote =
+    case(
+        FileName =~ "msimg32.dll" and FolderPath !startswith @"C:\Windows\System32", "Potential malicious sideloaded msimg32.dll",
+        FileName in~ ("rwdrv.sys", "hlpdrv.sys"), "Driver artifact associated with Qilin EDR-killer chain",
+        FileName =~ "EDRKiller.exe", "EDR killer payload match",
+        ""
+    )
+| order by Timestamp desc
