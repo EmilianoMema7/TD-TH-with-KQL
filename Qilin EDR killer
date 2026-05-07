@@ -1,11 +1,12 @@
 //Qilin EDR killer IOCs by Talos
 //https://blog.talosintelligence.com/qilin-edr-killer/
 
+let lookback = 30d;
 let sha256_iocs = dynamic([
-  "7787da25451f5538766240f4a8a2846d0a589c59391e15f188aa077e8b888497", // msimg32.dll
-  "16f83f056177c4ec24c7e99d01ca9d9d6713bd0497eeedb777a3ffefa99c97f0", // rwdrv.sys
-  "bd1f381e5a3db22e88776b7873d4d2835e9a1ec620571d2b1da0c58f81c84a56", // hlpdrv.sys
-  "12fcde06ddadf1b48a61b12596e6286316fd33e850687fe4153dfd9383f0a4a0"  // EDRKiller.exe
+  "7787da25451f5538766240f4a8a2846d0a589c59391e15f188aa077e8b888497",
+  "16f83f056177c4ec24c7e99d01ca9d9d6713bd0497eeedb777a3ffefa99c97f0",
+  "bd1f381e5a3db22e88776b7873d4d2835e9a1ec620571d2b1da0c58f81c84a56",
+  "12fcde06ddadf1b48a61b12596e6286316fd33e850687fe4153dfd9383f0a4a0"
 ]);
 let sha1_iocs = dynamic([
   "01d00d3dd8bc8fd92dae9e04d0f076cb3158dc9c",
@@ -19,48 +20,91 @@ let md5_iocs = dynamic([
   "cf7cad39407d8cd93135be42b6bd258f",
   "1305e8b0f9c459d5ed85e7e474fbebb1"
 ]);
-let file_iocs = dynamic([
-  "msimg32.dll",
-  "rwdrv.sys",
-  "hlpdrv.sys",
-  "EDRKiller.exe"
-]);
+let driver_iocs = dynamic(["rwdrv.sys", "hlpdrv.sys"]);
+let payload_iocs = dynamic(["EDRKiller.exe"]);
 union isfuzzy=true
 (
     DeviceFileEvents
-    | extend EventTable = "DeviceFileEvents"
-    | project Timestamp, DeviceName, EventTable, ActionType, FileName, FolderPath, SHA1, SHA256, MD5,
-              InitiatingProcessFileName, InitiatingProcessCommandLine, ReportId
+    | where Timestamp > ago(lookback)
+    | project Timestamp, DeviceName, EventTable="DeviceFileEvents", ActionType,
+              FileName, FolderPath, SHA1, SHA256, MD5,
+              InitiatingProcessFileName, InitiatingProcessFolderPath,
+              InitiatingProcessCommandLine, ReportId
 ),
 (
     DeviceImageLoadEvents
-    | extend EventTable = "DeviceImageLoadEvents"
-    | project Timestamp, DeviceName, EventTable, ActionType, FileName, FolderPath, SHA1, SHA256, MD5,
-              InitiatingProcessFileName, InitiatingProcessCommandLine, ReportId
+    | where Timestamp > ago(lookback)
+    | project Timestamp, DeviceName, EventTable="DeviceImageLoadEvents", ActionType,
+              FileName, FolderPath, SHA1, SHA256, MD5,
+              InitiatingProcessFileName, InitiatingProcessFolderPath,
+              InitiatingProcessCommandLine, ReportId
 ),
 (
     DeviceProcessEvents
-    | extend EventTable = "DeviceProcessEvents"
-    | project Timestamp, DeviceName, EventTable, ActionType, FileName, FolderPath, SHA1, SHA256, MD5,
-              InitiatingProcessFileName, InitiatingProcessCommandLine, ReportId
+    | where Timestamp > ago(lookback)
+    | project Timestamp, DeviceName, EventTable="DeviceProcessEvents", ActionType,
+              FileName, FolderPath, SHA1, SHA256, MD5,
+              InitiatingProcessFileName, InitiatingProcessFolderPath,
+              InitiatingProcessCommandLine, ReportId
+),
+(
+    DeviceDriverEvents
+    | where Timestamp > ago(lookback)
+    | project Timestamp, DeviceName, EventTable="DeviceDriverEvents", ActionType,
+              FileName, FolderPath, SHA1, SHA256, MD5,
+              InitiatingProcessFileName, InitiatingProcessFolderPath,
+              InitiatingProcessCommandLine, ReportId
 )
-| where SHA256 in (sha256_iocs)
+| extend PathLower = tolower(FolderPath)
+| extend IsKnownWindowsServicingPath =
+    PathLower startswith @"c:\windows\winsxs\"
+    or PathLower startswith @"c:\windows\softwaredistribution\"
+    or PathLower startswith @"c:\$winreagent\"
+    or PathLower startswith @"c:\$windows.~bt\"
+    or PathLower contains @"\scratch\mount\windows\"
+    or PathLower contains @"\winsxs\"
+| extend IsLegitSystemMsimg32 =
+    FileName =~ "msimg32.dll"
+    and (
+        PathLower startswith @"c:\windows\system32\"
+        or PathLower startswith @"c:\windows\syswow64\"
+        or IsKnownWindowsServicingPath
+    )
+| extend IsHashMatch =
+    SHA256 in (sha256_iocs)
     or SHA1 in (sha1_iocs)
     or MD5 in (md5_iocs)
-    or FileName in~ (file_iocs)
+| extend IsDriverNameMatch = FileName in~ (driver_iocs)
+| extend IsPayloadNameMatch = FileName in~ (payload_iocs)
+| extend IsSuspiciousMsimg32 =
+    FileName =~ "msimg32.dll"
+    and not(IsLegitSystemMsimg32)
+| where IsHashMatch
+    or IsDriverNameMatch
+    or IsPayloadNameMatch
+    or IsSuspiciousMsimg32
+| extend Severity =
+    case(
+        IsHashMatch, "High",
+        IsDriverNameMatch, "High",
+        IsPayloadNameMatch, "High",
+        IsSuspiciousMsimg32 and EventTable == "DeviceImageLoadEvents", "Medium",
+        IsSuspiciousMsimg32, "Low",
+        "Informational"
+    )
 | extend MatchReason =
     case(
         SHA256 in (sha256_iocs), "SHA256 IOC",
         SHA1 in (sha1_iocs), "SHA1 IOC",
         MD5 in (md5_iocs), "MD5 IOC",
-        FileName in~ (file_iocs), "Filename IOC",
+        IsDriverNameMatch, "Qilin driver filename",
+        IsPayloadNameMatch, "EDR killer payload filename",
+        IsSuspiciousMsimg32, "msimg32.dll outside normal Windows/servicing paths",
         "Unknown"
     )
-| extend SuspicionNote =
-    case(
-        FileName =~ "msimg32.dll" and FolderPath !startswith @"C:\Windows\System32", "Potential malicious sideloaded msimg32.dll",
-        FileName in~ ("rwdrv.sys", "hlpdrv.sys"), "Driver artifact associated with Qilin EDR-killer chain",
-        FileName =~ "EDRKiller.exe", "EDR killer payload match",
-        ""
-    )
-| order by Timestamp desc
+| project Timestamp, Severity, DeviceName, EventTable, ActionType,
+          FileName, FolderPath, MatchReason,
+          SHA256, SHA1, MD5,
+          InitiatingProcessFileName, InitiatingProcessFolderPath,
+          InitiatingProcessCommandLine, ReportId
+| order by Severity asc, Timestamp desc
