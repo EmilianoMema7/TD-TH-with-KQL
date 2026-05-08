@@ -1,0 +1,77 @@
+// PhantomRPC-style privilege escalation hunt (low-noise / strict version)
+// Detects suspicious SYSTEM execution shortly after LOCAL SERVICE / NETWORK SERVICE activity
+// Requires BOTH suspicious command content AND suspicious execution path to reduce noise
+// NOTE:
+// For broader coverage (but more noise), replace:
+//   AND condition with OR:
+//
+// | where ProcessCommandLine has_any (...) OR FolderPath has_any (...)
+//
+// Use for exploratory hunting only.
+let Lookback = 30d;
+let CorrelationWindow = 10m;
+let SuspiciousBins = dynamic([
+    "cmd.exe","powershell.exe","pwsh.exe",
+    "wscript.exe","cscript.exe",
+    "rundll32.exe","regsvr32.exe","mshta.exe",
+    "certutil.exe","bitsadmin.exe",
+    "whoami.exe","net.exe","sc.exe","schtasks.exe"
+]);
+let InterestingCmdPatterns = dynamic([
+    "-enc","EncodedCommand","FromBase64String",
+    "http://","https://",
+    "Invoke-WebRequest","Invoke-RestMethod","DownloadString","IEX",
+    "whoami","net user","net localgroup",
+    "reg add","sc create","schtasks /create"
+]);
+let SuspiciousPaths = dynamic([
+    @"\Users\",
+    @"\AppData\",
+    @"\Temp\",
+    @"\SystemTemp\",
+    @"\ProgramData\"
+]);
+let KnownBenignCmdPatterns = dynamic([
+    "davclnt.dll,DavSetCookie",
+    "Office Serviceability Manager",
+    "ExecutionPolicy AllSigned",
+    "PcaSvc.dll,PcaPatchSdbTask",
+    "GoogleUpdater",
+    "DellSupportAssist",
+    @"Dell\TrustedDevice",
+    @"Lenovo\Vantage",
+    @"ManageEngine\UEMS_Agent"
+]);
+let LowPrivServiceActivity =
+    DeviceProcessEvents
+    | where Timestamp > ago(Lookback)
+    | where AccountSid in ("S-1-5-19", "S-1-5-20")
+    | project DeviceId, DeviceName, LowPrivTime=Timestamp;
+let SuspiciousSystemExecution =
+    DeviceProcessEvents
+    | where Timestamp > ago(Lookback)
+    | where AccountSid == "S-1-5-18"
+    | where FileName in~ (SuspiciousBins)
+    | where not(ProcessCommandLine has_any (KnownBenignCmdPatterns))
+    | where not(InitiatingProcessCommandLine has_any (KnownBenignCmdPatterns))
+    // 🔥 STRICT CONDITION (key difference)
+    | where ProcessCommandLine has_any (InterestingCmdPatterns)
+    | where FolderPath has_any (SuspiciousPaths)
+    | project DeviceId, DeviceName,
+              SystemTime=Timestamp,
+              SystemProcess=FileName,
+              SystemCmd=ProcessCommandLine,
+              FolderPath,
+              ParentProcess=InitiatingProcessFileName,
+              ParentCmd=InitiatingProcessCommandLine;
+LowPrivServiceActivity
+| join kind=inner SuspiciousSystemExecution on DeviceId
+| where SystemTime between (LowPrivTime .. datetime_add("minute", 10, LowPrivTime))
+| summarize
+    FirstSeen=min(SystemTime),
+    LastSeen=max(SystemTime),
+    HitCount=count(),
+    SampleCmd=any(SystemCmd),
+    SampleParent=any(ParentProcess)
+  by DeviceName, SystemProcess, FolderPath
+| order by LastSeen desc
