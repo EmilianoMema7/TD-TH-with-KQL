@@ -4,9 +4,7 @@
 // NOTE:
 // For broader coverage (but more noise), replace:
 //   AND condition with OR:
-//
 // | where ProcessCommandLine has_any (...) OR FolderPath has_any (...)
-//
 // Use for exploratory hunting only.
 let Lookback = 30d;
 let CorrelationWindow = 10m;
