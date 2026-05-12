@@ -1,0 +1,139 @@
+// Title: Remcos RAT via Fake Google Drive Phishing - Threat Hunt
+// Description: Hunt for Remcos RAT delivery via Google Cloud Storage phishing infrastructure and suspicious script execution chains.
+// Anlysis and IOCS were gathered from: https://any.run/cybersecurity-blog/phishing-google-drive-remcos/
+// MITRE ATT&CK:
+// T1566.002 - Phishing: Spearphishing Link
+// T1204.001 - User Execution: Malicious Link
+// T1059.001 - PowerShell
+// T1059.005 - Visual Basic
+// T1059.007 - JavaScript
+// T1218 - Signed Binary Proxy Execution
+// T1105 - Ingress Tool Transfer
+// T1055 - Process Injection
+// T1547.001 - Registry Run Keys / Startup Folder
+// T1036 - Masquerading
+// T1071.001 - Application Layer Protocol: Web Protocols
+let Lookback = 30d;
+let SuspiciousBuckets = dynamic(["com-bid", "pa-bids", "contract-bid-0", "in-bids", "out-bid"]);
+let SuspiciousFiles = dynamic(["Bid-Packet-INV-Document.js", "Bid-P-INV-Document.js", "DYHVQ.ps1", "ZIFDG.tmp"]);
+let KnownC2IPs = dynamic(["198.187.29.19"]);
+union
+(
+    DeviceNetworkEvents
+    | where Timestamp >= ago(Lookback)
+    | where RemoteIP in (KnownC2IPs)
+        or RemoteUrl has_any (SuspiciousBuckets)
+        or (
+            InitiatingProcessFileName =~ "RegSvcs.exe"
+            and not(InitiatingProcessFolderPath has @"Dell\CommandPowerManager")
+            and not(RemoteUrl has_any ("microsoft.com", "windowsupdate.com"))
+        )
+    | extend DetectionSource = "Network",
+             EventFileName = InitiatingProcessFileName,
+             EventFolderPath = InitiatingProcessFolderPath,
+             EventCommandLine = InitiatingProcessCommandLine,
+             EventRemoteUrl = RemoteUrl,
+             EventRemoteIP = RemoteIP,
+             EventRegistryKey = "",
+             EventSHA256 = InitiatingProcessSHA256
+    | project Timestamp, DeviceName, DeviceId, AccountName = InitiatingProcessAccountName,
+              DetectionSource, EventFileName, EventFolderPath, EventCommandLine,
+              InitiatingProcessFileName, InitiatingProcessCommandLine,
+              EventRemoteUrl, EventRemoteIP, EventRegistryKey, EventSHA256
+),
+(
+    DeviceProcessEvents
+    | where Timestamp >= ago(Lookback)
+    | where
+        FileName in~ (SuspiciousFiles)
+        or ProcessCommandLine has_any (SuspiciousFiles)
+        or (
+            FileName =~ "RegSvcs.exe"
+            and not(ProcessCommandLine has @"Dell\CommandPowerManager")
+            and not(FolderPath has @"Dell\CommandPowerManager")
+        )
+        or (
+            FileName in~ ("powershell.exe", "pwsh.exe")
+            and ProcessCommandLine has_any ("FromBase64String", "Assembly.Load", "-EncodedCommand", "DownloadString", "WebClient", "Invoke-WebRequest", "Invoke-RestMethod")
+            and not(ProcessCommandLine has "-enc=UTF-8")
+            and not(ProcessCommandLine has "nessus")
+            and not(ProcessCommandLine has "169.254.169.254")
+            and not(ProcessCommandLine has @"Program Files\Tenable")
+        )
+        or (
+            FileName in~ ("wscript.exe", "cscript.exe", "mshta.exe")
+            and (
+                ProcessCommandLine has_any ("AppData", "Temp", "Downloads", ".js", ".vbs")
+                or InitiatingProcessFileName in~ ("chrome.exe", "msedge.exe", "firefox.exe", "outlook.exe", "winword.exe", "excel.exe", "powerpnt.exe")
+            )
+            and not(ProcessCommandLine has "winrm.vbs")
+            and not(ProcessCommandLine has "IntuneManagementExtension")
+        )
+    | extend DetectionSource = "Process",
+             EventFileName = FileName,
+             EventFolderPath = FolderPath,
+             EventCommandLine = ProcessCommandLine,
+             EventRemoteUrl = "",
+             EventRemoteIP = "",
+             EventRegistryKey = "",
+             EventSHA256 = SHA256
+    | project Timestamp, DeviceName, DeviceId, AccountName,
+              DetectionSource, EventFileName, EventFolderPath, EventCommandLine,
+              InitiatingProcessFileName, InitiatingProcessCommandLine,
+              EventRemoteUrl, EventRemoteIP, EventRegistryKey, EventSHA256
+),
+(
+    DeviceFileEvents
+    | where Timestamp >= ago(Lookback)
+    | where FileName in~ (SuspiciousFiles)
+        or (
+            FolderPath has @"AppData\WindowsUpdate"
+            and FileName has_any (".js", ".vbs", ".ps1", ".tmp", ".exe", ".dll")
+        )
+    | extend DetectionSource = "File",
+             EventFileName = FileName,
+             EventFolderPath = FolderPath,
+             EventCommandLine = InitiatingProcessCommandLine,
+             EventRemoteUrl = "",
+             EventRemoteIP = "",
+             EventRegistryKey = "",
+             EventSHA256 = SHA256
+    | project Timestamp, DeviceName, DeviceId, AccountName = InitiatingProcessAccountName,
+              DetectionSource, EventFileName, EventFolderPath, EventCommandLine,
+              InitiatingProcessFileName, InitiatingProcessCommandLine,
+              EventRemoteUrl, EventRemoteIP, EventRegistryKey, EventSHA256
+),
+(
+    DeviceRegistryEvents
+    | where Timestamp >= ago(Lookback)
+    | where RegistryKey has @"Software\Remcos"
+        or (
+            RegistryKey has "WindowsUpdate"
+            and RegistryKey has_any ("Run", "RunOnce")
+        )
+    | extend DetectionSource = "Registry",
+             EventFileName = InitiatingProcessFileName,
+             EventFolderPath = "",
+             EventCommandLine = InitiatingProcessCommandLine,
+             EventRemoteUrl = "",
+             EventRemoteIP = "",
+             EventRegistryKey = RegistryKey,
+             EventSHA256 = InitiatingProcessSHA256
+    | project Timestamp, DeviceName, DeviceId, AccountName = InitiatingProcessAccountName,
+              DetectionSource, EventFileName, EventFolderPath, EventCommandLine,
+              InitiatingProcessFileName, InitiatingProcessCommandLine,
+              EventRemoteUrl, EventRemoteIP, EventRegistryKey, EventSHA256
+)
+| extend SuspicionReason = case(
+    EventRemoteIP in (KnownC2IPs), "Known Remcos-related C2 IP",
+    EventRemoteUrl has_any (SuspiciousBuckets), "Known suspicious Google Cloud Storage bucket",
+    EventFileName in~ (SuspiciousFiles) or EventCommandLine has_any (SuspiciousFiles), "Known suspicious campaign filename",
+    EventRegistryKey has @"Software\Remcos", "Possible Remcos registry persistence",
+    EventFileName =~ "RegSvcs.exe", "RegSvcs.exe execution excluding known Dell FP",
+    EventCommandLine has_any ("FromBase64String", "Assembly.Load", "-EncodedCommand"), "Suspicious encoded/in-memory PowerShell",
+    EventCommandLine has_any ("DownloadString", "WebClient", "Invoke-WebRequest", "Invoke-RestMethod"), "Suspicious PowerShell download behavior",
+    EventFileName in~ ("wscript.exe", "cscript.exe", "mshta.exe"), "Suspicious script interpreter execution",
+    EventFolderPath has @"AppData\WindowsUpdate" or EventRegistryKey has "WindowsUpdate", "Suspicious WindowsUpdate path/persistence artifact",
+    "Suspicious Remcos-related behavior"
+)
+| sort by Timestamp desc
