@@ -1,0 +1,53 @@
+// Title: CTFMON Privilege Escalation / Abnormal Behavior - Threat Hunt
+// Description: Hunt for abnormal ctfmon.exe execution paths and suspicious child-process spawning potentially related to privilege escalation activity.
+// Article: https://thehackernews.com/2026/05/windows-zero-days-expose-bitlocker.html
+// MITRE ATT&CK:
+// T1068 - Exploitation for Privilege Escalation
+// T1548 - Abuse Elevation Control Mechanism
+// T1218 - Signed Binary Proxy Execution
+// T1059.001 - PowerShell
+// T1059.003 - Windows Command Shell
+// T1059.005 - Visual Basic
+let Lookback = 30d;
+let SuspiciousChildren = dynamic([
+    "powershell.exe",
+    "pwsh.exe",
+    "cmd.exe",
+    "rundll32.exe",
+    "regsvr32.exe",
+    "mshta.exe",
+    "wscript.exe",
+    "cscript.exe"
+]);
+DeviceProcessEvents
+| where Timestamp >= ago(Lookback)
+| where
+    (
+        InitiatingProcessFileName =~ "ctfmon.exe"
+        and FileName in~ (SuspiciousChildren)
+    )
+    or
+    (
+        FileName =~ "ctfmon.exe"
+        and FolderPath !startswith @"C:\Windows\System32"
+        and FolderPath !startswith @"C:\Windows\SysWOW64"
+        and FolderPath !startswith @"C:\Windows\SoftwareDistribution"
+    )
+| extend SuspicionReason = case(
+    InitiatingProcessFileName =~ "ctfmon.exe",
+    "ctfmon.exe spawned suspicious child process",
+    FileName =~ "ctfmon.exe",
+    "ctfmon.exe executed from abnormal path",
+    "Suspicious ctfmon.exe behavior"
+)
+| project Timestamp,
+          DeviceName,
+          AccountName,
+          FileName,
+          FolderPath,
+          ProcessCommandLine,
+          InitiatingProcessFileName,
+          InitiatingProcessCommandLine,
+          SHA256,
+          SuspicionReason
+| sort by Timestamp desc
