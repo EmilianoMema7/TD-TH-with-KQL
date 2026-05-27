@@ -1,0 +1,60 @@
+// Title:
+// SHub Stealer via Fake Claude ClickFix Pages - Threat Hunt
+// Description:
+// Hunt for suspicious macOS terminal and AppleScript execution chains
+// associated with fake Claude AI ClickFix-style malware delivery pages.
+// This hunt focuses on downloaded script execution, osascript abuse, and known SHub Stealer infrastructure.
+// Initiating Report: https://github.com/PaloAltoNetworks/Unit42-timely-threat-intel/blob/main/2026-05-26-IOCs-for-SHub-Stealer-activity.txt
+// MITRE ATT&CK:
+// T1566.002 - Phishing: Spearphishing Link
+// T1204.001 - User Execution
+// T1059.004 - Unix Shell
+// T1059.002 - AppleScript
+// T1105 - Ingress Tool Transfer
+// T1071.001 - Application Layer Protocol: Web Protocols
+// T1555 - Credentials from Password Stores
+// Expected Result:
+// This query may return 0 results in a healthy environment.
+// Any result should be reviewed because osascript execution involving downloaded scripts,
+// temporary paths, or known malicious infrastructure is uncommon.
+// Known IOCs:
+// claudecontrol.github.io
+// qw4c12qqqqoepwq.com
+// bac16d1f3c80f84dbc7076b7d015cf3fdc2141b9ac776ee45dd4543188d4b3d9
+// 42bf3414cf6479d2626ca2a9bd11921692da33758678f6be68714d9cb094cffc
+
+let Lookback = 30d;
+let SuspiciousDomains = dynamic([
+    "claudecontrol.github.io",
+    "qw4c12qqqqoepwq.com"
+]);
+DeviceProcessEvents
+| where Timestamp >= ago(Lookback)
+| where
+(
+    FileName =~ "osascript"
+    and (
+        ProcessCommandLine has_any (".applescript", "/tmp/", "/Downloads/")
+        or InitiatingProcessCommandLine has_any ("curl ", "wget ")
+    )
+)
+or
+(
+    ProcessCommandLine has_any (SuspiciousDomains)
+)
+or
+(
+    InitiatingProcessFileName in~ ("Terminal", "Terminal.app")
+    and FileName in~ ("curl", "wget")
+    and ProcessCommandLine has_any (".sh", ".applescript")
+)
+| project Timestamp,
+          DeviceName,
+          AccountName,
+          FileName,
+          FolderPath,
+          ProcessCommandLine,
+          InitiatingProcessFileName,
+          InitiatingProcessCommandLine,
+          SHA256
+| sort by Timestamp desc
