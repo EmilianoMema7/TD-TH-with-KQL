@@ -1,0 +1,39 @@
+// Title: JOMANGY Webshell / FreePBX Persistence and Post-Exploitation - Threat Hunt
+// Description: Hunts for JOMANGY-style Linux webshell activity by identifying web server processes spawning download, persistence, account-management, and firewall utilities, plus known JOMANGY infrastructure.
+// Source: ANY.RUN - JOMANGY Webshell Analysis: -https://x.com/anyrun_app/status/2059984416324116828
+-https://app.any.run/tasks/6c779f0e-e422-4ef5-9bc7-6a799480cc20/?utm_source=twitter&utm_medium=post&utm_campaign=jomangy_webshell&utm_content=linktoservice&utm_term=280526
+-https://any.run/report/621097b50088eb97cf908b87b0babb0afd8f5bc3f38b38dd4672222cd9602d5b/6c779f0e-e422-4ef5-9bc7-6a799480cc20
+// MITRE ATT&CK:
+// T1505.003 - Web Shell
+// T1059.004 - Unix Shell
+// T1053.003 - Cron
+// T1136 - Create Account
+// T1078 - Valid Accounts
+// T1003.008 - /etc/passwd and /etc/shadow
+// T1562 - Impair Defenses
+// T1105 - Ingress Tool Transfer
+// Expected Result: May return 0 results in a healthy environment. Any result should be reviewed.
+
+let Lookback=30d;
+let WebProcesses=dynamic(["apache2","httpd","php-fpm","nginx"]);
+let SuspiciousChildren=dynamic(["curl","wget","crontab","useradd","adduser","passwd","iptables","firewall-cmd"]);
+let KnownIPs=dynamic(["45.95.147.178","160.119.69.4"]);
+union (
+DeviceProcessEvents
+| where Timestamp>=ago(Lookback)
+| where InitiatingProcessFileName in~ (WebProcesses)
+| where FileName in~ (SuspiciousChildren)
+| where not(ProcessCommandLine has "localhost:42699")
+| where not(ProcessCommandLine has "com.instana.plugin.generic.event")
+| extend DetectionSource="Process",SuspicionReason="Web server process spawned persistence/download/account/firewall utility"
+| project Timestamp,DeviceName,AccountName,DetectionSource,SuspicionReason,FileName,FolderPath,ProcessCommandLine,InitiatingProcessFileName,InitiatingProcessCommandLine,RemoteIP="",RemoteUrl="",SHA256
+),
+(
+DeviceNetworkEvents
+| where Timestamp>=ago(Lookback)
+| where InitiatingProcessFileName in~ (WebProcesses)
+| where RemoteIP in (KnownIPs)
+| extend DetectionSource="Network",SuspicionReason="Web server communicated with known JOMANGY infrastructure"
+| project Timestamp,DeviceName,AccountName=InitiatingProcessAccountName,DetectionSource,SuspicionReason,FileName=InitiatingProcessFileName,FolderPath=InitiatingProcessFolderPath,ProcessCommandLine=InitiatingProcessCommandLine,InitiatingProcessFileName,InitiatingProcessCommandLine,RemoteIP,RemoteUrl,SHA256=InitiatingProcessSHA256
+)
+| sort by Timestamp desc
