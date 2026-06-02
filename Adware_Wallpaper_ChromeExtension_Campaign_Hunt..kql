@@ -1,0 +1,120 @@
+﻿// Title: Adware Wallpaper Chrome Extension Campaign
+// Description: Detects suspicious Chrome/Chromium process executions and network connections related to the 2026-06 Wallpaper Adware Chrome Extension campaign observed by Unit42.
+// Source: https://github.com/PaloAltoNetworks/Unit42-timely-threat-intel/blob/main/2026-06-01-Adware-Wallpaper-Chrome-Extension-Campaign.txt
+// MITRE ATT&CK: 
+//T1547 (Boot or Logon Autostart Execution), 
+//T1071.001 (Application Layer Protocol: Web Protocols), 
+//T1059.003 (Command and Scripting Interpreter: Windows Command Shell)
+// Expected Result: Correlated Chrome/Chromium processes running known malicious extension IDs and associated network connections to suspicious domains.
+// False Positives: May include legitimate Chrome extensions sharing similar patterns or non-malicious connections to related domains.
+// Known IOCs:
+//   Domains: gameograf.com, ovkas.com, chromewallpaper.com, owhit.com
+//   Chrome Extension IDs: List of numerous known malicious extension IDs from Unit42 report
+
+let Lookback = 30d;
+// Suspicious Chrome extension IDs extracted from known adware campaign telemetry
+let SuspiciousExtensions = dynamic([
+  "enbiohidhjmepichhkjgbgppabjembml",
+  "adiolfenpimdeonhngpkbjbjjcopdfdp",
+  "dligcnabijlnmgbamdiakeoencoomaef",
+  "fnfhdeimoegdjjpnmlpfjpchpmndamii",
+  "cnlabipcnjebmibdelcindmhkkchndpd",
+  "belplhjdnniinakggihimnikmhiijenk",
+  "ljpapggfdnpbagfbfnlolopaiknkbbmb",
+  "flomkgojkgpbholngecnpopgafijhenn",
+  "imaibfagcdapbapmnepebaamfgjpdidk",
+  "cgopijlpehalkmakdjmhjonljokilban",
+  "laombeiddkmdfbnfobjgebnfaedefidp",
+  "ekgffgmnoaclljkicakkmobeoeeahmac",
+  "eeicldodfhmgcjedepfmmpdpibebgkbl",
+  "mifhdbomjebcedjhoclccddgmmjhpkne",
+  "mphkmheooambmkecalfljbkchadlfhap",
+  "phpjgmopmomaokbddkjpnnffmchbnagh",
+  "bbdejfjnpbdjbdnibpmiegbdfbngbahn",
+  "ippdfgpdnmndlebdgggkgpapaffdcabp",
+  "iccidfcfcknibmadeplfehdinbeghbej",
+  "gljmgepjbkfkcgepikciaeiihgfbfljf",
+  "bbbbneobfdbkipmlgpapfjabfggogdij",
+  "nbmkfpfhpmajmnkihgkmbgbnalncdnna",
+  "nipbcfdkdiccemcmnfeebgmlnejmhbpd",
+  "jnnkcihkpoljaejgnmaohgbodpdmfmdg",
+  "mmlpmfnhfgjpogjjleoklkfeipnnojgd",
+  "nfpdlagnobaebggdhbflhiobfhondmdb",
+  "abcidfelbbfbijdeilhlgmgejdbappaj",
+  "iagfghcakcckojogakhmdeebmkkjldfb",
+  "clddibaehbcaahnmhnjbnbkccbmghago",
+  "kjhnajdlflnfmfdghcckbngdchajaime",
+  "bdnlfekadefohaaphlndnnieaolmpaao",
+  "gejcmgekakacmlccopnlhanpipkfggcn",
+  "djlolemkfmghdipoalonefccpgjbfanc",
+  "mjojolnflneijogfbcoficpkmldhamba",
+  "mefpdeoonpdjecmnekooffdonpllblnb",
+  "cpddjnopcpkpdhkhnimmgnniiglambdl",
+  "kocbandikoadlapjnhpgbimaoncpnkpi",
+  "hnhdhliichckphekkkgpopiicfdbcocc",
+  "bfkaeaehpekfmfkbindbledlfcbammaa",
+  "liimhladbmdgppodfomkkcppkfbkmjbm",
+  "klgebnlgcgpinhblnheofececjjaaofd",
+  "dhllmgbdfgblbeckhcidmbcamonplgmg",
+  "ecbkfpnhjofeoimpihdlbcjcedjdllin",
+  "oojlpfnmoijaiephcdakeggdbbfdbanb",
+  "jeoonjgjpiepmdcmgcdnadamojoefbad",
+  "pkadlokfbobblmiclilbgajkjcpaaopk",
+  "dbfgidnodecgmmademfkaddkjidikobd",
+  "oeaifghbbhjomcgbgpihadpbfnpidggi",
+  "njggjookikiachbndaocbijjpddcijkf",
+  "ndeeopioahgjcemhhbgdoednmaleeemp",
+  "kjdbfkbkiepbabfjncinoeclenkcgbmf",
+  "opdcfknedcfgiophhnojmnljpndojbom",
+  "jneelgnlhodkmclkcnooopnfmamckbgf",
+  "mjoehhmchapliffjeiopgilfhmphfpbp",
+  "obdcmkbifgehdkjacmndbapoiiabnjlo",
+  "ichbopbcihgldmgbgijfllfikfpeamlo",
+  "ngnfdhfeccjahkpielcjbjebipckhoii",
+  "lappfnpdgnphiodelgopbncadpoldica",
+  "pnlahghdcgkecfkeeiekinacgmbdcabk",
+  "cdfjefamdaghbhmlddgnfneonpjbbehp",
+  "phcfjgnhnpfjhpghiacilpocpcdcgljm",
+  "fipehnelbojemafmdmhdkphjnafdnfle",
+  "fnfaggodhehejkigojefdehaffoneokd",
+  "jbaghkaihalnmkknemcgjikkimiecgpn",
+  "famoeaahdjkggighmjpagpjmcmbinkia",
+  "ooepolkedgpkhojiihdjoajnjohciajl",
+  "gpkgjopaiakcnokecmocecnbpghkkjhg",
+  "pkmjadcejhbaahnlaooacmfkfflpkcic",
+  "fipehnelbojemafmdmhdkphjnafdnfle"
+]);
+// Suspicious domains related to the campaign
+let SuspiciousDomains = dynamic([
+  "gameograf.com",
+  "ovkas.com",
+  "chromewallpaper.com",
+  "owhit.com"
+]);
+// Detect suspicious Chrome/Chromium processes with extension IDs in command line
+let SuspiciousChromeProcesses = DeviceProcessEvents
+| where Timestamp >= ago(Lookback)
+| where FileName has "chrome" or FileName has "chromium"
+| where ProcessCommandLine has_any (SuspiciousExtensions)
+| project DeviceId, AccountName, FileName, ProcessCommandLine, SHA256, Timestamp;
+// Detect outbound network connections from Chrome/Chromium processes to suspicious domains
+let SuspiciousChromeConnections = DeviceNetworkEvents
+| where Timestamp >= ago(Lookback)
+| where InitiatingProcessFileName has "chrome" or InitiatingProcessFileName has "chromium"
+| where RemoteUrl has_any (SuspiciousDomains)
+| project DeviceId, AccountName=InitiatingProcessAccountName, FileName=InitiatingProcessFileName, ProcessCommandLine=InitiatingProcessCommandLine,
+          RemoteUrl, RemoteIP, SHA256=InitiatingProcessSHA256, Timestamp;
+// Correlate suspicious Chrome execution events with related network connections for higher confidence alert
+SuspiciousChromeProcesses
+| join kind=inner (
+    SuspiciousChromeConnections
+) on DeviceId, ProcessCommandLine
+| project Timestamp=coalesce(Timestamp, Timestamp1),
+          DeviceId,
+          AccountName,
+          FileName,
+          ProcessCommandLine,
+          RemoteUrl,
+          RemoteIP,
+          SHA256
+| sort by Timestamp desc
