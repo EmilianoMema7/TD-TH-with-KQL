@@ -1,0 +1,80 @@
+﻿// Title: The Gentlemen Ransomware
+//
+// Description:
+// Hunt for infrastructure, persistence mechanisms, and malware artifacts
+// associated with the EtherRAT → TukTuk → The Gentlemen ransomware intrusion.
+//
+// Source:https://thedfirreport.com/2026/05/11/flash-alert-etherrat-and-tuktuk-c2-end-in-the-gentleman-ransomware/#toc-heading-block_c25a5a48650b34bf9df78871039e58f7
+//
+// MITRE ATT&CK:
+// T1204 - User Execution
+// T1218.007 - Msiexec
+// T1059.003 - Windows Command Shell
+// T1059.007 - JavaScript
+// T1547.001 - Registry Run Keys
+// T1105 - Ingress Tool Transfer
+// T1071.001 - Web Protocols
+// T1090.003 - Multi-hop Proxy
+// T1567 - Exfiltration to Cloud Storage
+// T1486 - Data Encrypted for Impact
+//
+// Expected Noise:
+// Low
+//
+// False Positive Notes:
+// - Supabase may be used by developers.
+// - ClickHouse Cloud may be used by analytics platforms.
+// - TryCloudflare may be used by developers, red teams, or administrators.
+
+let Lookback=30d;
+let CampaignDomains=dynamic([
+"1rpc.io",
+"trycloudflare.com",
+"supabase.co",
+"clickhouse.cloud",
+"neon.tech",
+"borjumaniya.store",
+"arweave.net",
+"goldsky.arweave.net",
+"g8way.io"
+]);
+let CampaignHashes=dynamic([
+"d9487fdc097f770e5661f9e5dee130068cb179d33716abff1a21c8cb901f25a6",
+"8c2665adf8bfab65463f2a9bd1b7bb0231de3f5c1e6a2e51479e44aaac2e7bf0",
+"4142d5efd4ea2abab77f2f0a917610e2ff976bf9e19d7ad1e9156eccdc5412db",
+"2d4b4bb18b8445e49eeda571982874403befcecf78266e3d405f6529d98bee46",
+"19021e53b9929fdf4b7d0e0707434d56bb73c1a9b7403c8837b44d1c417198dc",
+"1795eacd2c58894ccdd6be8854fe6456c3b069a3a873432343b57b475b256aee"
+]);
+union (
+DeviceNetworkEvents
+| where Timestamp >= ago(Lookback)
+| where isnotempty(RemoteUrl)
+| where RemoteUrl has_any (CampaignDomains)
+| project Timestamp,DeviceName,DetectionType="Network IOC",RemoteUrl,RemoteIP,InitiatingProcessFileName,InitiatingProcessCommandLine,InitiatingProcessSHA256
+),
+(
+DeviceFileEvents
+| where Timestamp >= ago(Lookback)
+| where SHA256 in (CampaignHashes)
+| project Timestamp,DeviceName,DetectionType="Known Hash",FileName,FolderPath,SHA256
+),
+(
+DeviceRegistryEvents
+| where Timestamp >= ago(Lookback)
+| where RegistryKey has_any (
+@"\Software\Microsoft\Windows\CurrentVersion\Run",
+@"\Software\Microsoft\Windows\CurrentVersion\RunOnce"
+)
+| where InitiatingProcessCommandLine has_any (
+"1rpc.io",
+"trycloudflare.com",
+"supabase.co",
+"clickhouse.cloud",
+"neon.tech",
+"borjumaniya.store",
+"arweave.net"
+)
+| project Timestamp,DeviceName,DetectionType="Persistence",RegistryKey,InitiatingProcessFileName,InitiatingProcessCommandLine
+)
+| sort by Timestamp desc
