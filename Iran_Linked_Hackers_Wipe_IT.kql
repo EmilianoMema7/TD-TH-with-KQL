@@ -1,0 +1,55 @@
+// Title: Iran-Linked Hackers Wipe IT
+//
+// Description:
+// Hunt for indicators associated with Iran-linked destructive activity involving
+// FileFiend and the A.ExE Go tunneler. This hunt focuses on known C2
+// infrastructure, malware hashes, FileFiend-related filenames, and developer/PDB
+// artifacts observed in reporting.
+//
+// Source:
+// https://gbhackers.com/iran-linked-hackers-wipe-it/
+//
+// MITRE ATT&CK:
+// T1071.001 - Application Layer Protocol: Web Protocols
+// T1090     - Proxy
+// T1572     - Protocol Tunneling
+// T1105     - Ingress Tool Transfer
+// T1005     - Data from Local System
+// T1039     - Data from Network Shared Drive
+// T1485     - Data Destruction
+// T1490     - Inhibit System Recovery
+// T1036     - Masquerading
+//
+// Expected Result:
+// Low. This query may return 0 results in a healthy environment.
+//
+// False Positive Notes:
+// - Do not broadly hunt for "A.ExE" using has_any, because it may match many
+//   legitimate files ending in "_A.exe" or ".A.exe".
+// - The previous broad "A.ExE" artifact generated false positives from HP,
+//   VMware, ReasonLabs, installers, and temporary files.
+// - Prefer exact filename, hash, infrastructure, or FileFiend developer artifacts.
+//
+
+
+let Lookback=30d;
+let FileFiendIPs=dynamic(["31.172.87.20","212.83.61.213","66.85.26.183","195.20.17.129","46.246.125.131","146.70.233.83","91.193.19.198","89.36.231.56","84.200.89.52","46.30.190.173"]);
+let FileFiendDomains=dynamic(["nefeshhope.com","members.nefeshhope.com"]);
+let FileFiendHashes=dynamic(["81a25357d027d0f04a43139377d5d58384b8e9b0770e699cdcc37e600641cf90","c8cc4225d1e21324ef419adbb1c10dd0578fb034b5f5d7b8000f0aae1871c061","33a6b4900c2fbfb3c2d816947871eade800d0c0e2a2680871700fd6e640e5f20","d76a94309240a7e2f11a89fab54a6853628e976a5ff19084b1b0894c89e6a742","f6db77be038980e9dbbf9f11e0f7ae7d2d4d3f1a53199958f1f55137dde5efd3"]);
+let FileFiendArtifacts=dynamic(["Exchangedb.exe","FileFiend","temp uploader v3","OH~FileFiend","uploader v3","nefeshhope"]);
+union (
+DeviceNetworkEvents
+| where Timestamp>=ago(Lookback)
+| where RemoteIP in (FileFiendIPs) or RemoteUrl has_any (FileFiendDomains)
+),
+(
+DeviceProcessEvents
+| where Timestamp>=ago(Lookback)
+| where SHA256 in (FileFiendHashes) or FileName =~ "Exchangedb.exe"
+),
+(
+DeviceFileEvents
+| where Timestamp>=ago(Lookback)
+| where SHA256 in (FileFiendHashes) or FileName =~ "Exchangedb.exe"
+)
+| sort by Timestamp desc
