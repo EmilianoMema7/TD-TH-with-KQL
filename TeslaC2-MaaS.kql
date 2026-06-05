@@ -1,0 +1,69 @@
+// Title: TeslaC2 MaaS Infrastructure and Behavior Hunt
+//
+// Description:
+// Hunt for indicators associated with an exposed TeslaC2 Malware-as-a-Service
+// framework. This hunt focuses on known C2 infrastructure, known malware hashes,
+// RTCore64.sys BYOVD artifacts, LSASS dumping behavior, XMRig/mining indicators,
+// and suspicious regsvr32/rundll32 usage observed in post-exploitation tooling.
+//
+// Source: https://x.com/SansLimit3/status/2062571354994467229
+//
+// MITRE ATT&CK:
+// T1105     - Ingress Tool Transfer
+// T1071.001 - Application Layer Protocol: Web Protocols
+// T1071.004 - Application Layer Protocol: DNS
+// T1572     - Protocol Tunneling
+// T1090     - Proxy
+// T1003.001 - LSASS Memory
+// T1134     - Access Token Manipulation
+// T1055     - Process Injection
+// T1068     - Exploitation for Privilege Escalation
+// T1496     - Resource Hijacking
+// T1486     - Data Encrypted for Impact
+// T1562.001 - Impair Defenses
+//
+// Expected Result:
+// Low. This query may return 0 results in a healthy environment.
+//
+// False Positive Notes:
+// - Do not hunt broadly for any rundll32.exe or regsvr32.exe execution.
+// - rundll32.exe is only suspicious here when paired with LSASS/comsvcs/MiniDump context.
+// - regsvr32.exe is only suspicious here when paired with remote scriptlet/scrobj.dll context.
+// - RTCore64.sys may appear in legitimate MSI Afterburner or hardware-monitoring contexts.
+// - XMRig/mining strings should be reviewed with process path, parent process, and account context.
+
+let Lookback=30d;
+let TeslaC2Domains=dynamic(["cloud-dash.xyz","cdn-telemetry-relaynn.online"]);
+let TeslaC2IPs=dynamic(["185.246.190.217"]);
+let TeslaC2Hashes=dynamic(["01aa278b07b58dc46c84bd0b1b5c8e9ee4e62ea0bf7a695862444af32e87f1fd","0851beaccaa81aaec0a1df819b05f26a002feba0ce7bfeb6de376d60ea4c6668","6adcc5eac3a3c4ec11b7c3093bd7af109db76b15a1d3c5d68d5ceba8fe6a7a96","806208644b10490204f2587be049f5563c88f8870b4db6aa79eb9b1b1bd5e04b","4193d5501148bf876a0d045bbd757a3b1f8f7d71c143780601ec5cd853a9bd35","bf967db4628e8b8d733353a4cc70858e18997a4f7c755da8cca55e52c03f8ce4","0108e2149537ec3b80f5fde7dfe0282f7d2c0f7cdbe06f5256ae83d0d5c754e3","87981f68e6b2838f8ed4a03ecd8d6acbd14e08057c3c51ff2090b31b3089e5e1","97d6b1019d3c3f06416c1a87ce77a11a10050cf8807c374e5557380c0b036544","30633e062e3f2d7a996b29e670914c1f52a237a76903fc0e982a5ac8f7febd53","a0b3c399336d9c5c580ac7eda19b4cc80557e4a004ff3d64f86d29a8e463b5ce","2175fdeeeabb327f4ec7b842763d0b06246c5016f39dc3b3744fab32e779d93f","61b5e012c8500e0bcbe89ec9adf93e3efdc409a621daff45c8b66e8a02ad9df2","b13c41823f7d690622202e5d2385465b125a7ccbca563909642da916ba49942e","f66088b710cb5266272ea7de50606ddc8c79e0ec3bd216f5c7b5221523a96112","99bfaa5007d78c2c1ce78008eef57f2883e03fabcb512fe487a705d119d47e4d","3570bcc724d692a10ba557cc5bbd5f9c337606c76cb116bd1c675f7eddab95d1","b3a60a0b7301da4d741d4a2d778720724bab6b34d288bba70e945f4f1a3cef0f"]);
+union (
+DeviceNetworkEvents
+| where Timestamp>=ago(Lookback)
+| where RemoteIP in (TeslaC2IPs) or RemoteUrl has_any (TeslaC2Domains)
+| extend DetectionSource="Network",SuspicionReason="Connection to TeslaC2 infrastructure"
+| project Timestamp,DeviceName,AccountName=InitiatingProcessAccountName,DetectionSource,SuspicionReason,FileName=InitiatingProcessFileName,FolderPath=InitiatingProcessFolderPath,ProcessCommandLine=InitiatingProcessCommandLine,RemoteUrl,RemoteIP,SHA256=InitiatingProcessSHA256
+),
+(
+DeviceFileEvents
+| where Timestamp>=ago(Lookback)
+| where SHA256 in (TeslaC2Hashes) or FileName =~ "RTCore64.sys" or FolderPath has "RTCore64.sys" or InitiatingProcessCommandLine has "RTCore64.sys"
+| extend DetectionSource="File",SuspicionReason="Known TeslaC2 hash or RTCore64.sys BYOVD artifact observed"
+| project Timestamp,DeviceName,AccountName=InitiatingProcessAccountName,DetectionSource,SuspicionReason,FileName,FolderPath,ProcessCommandLine=InitiatingProcessCommandLine,RemoteUrl="",RemoteIP="",SHA256
+),
+(
+DeviceProcessEvents
+| where Timestamp>=ago(Lookback)
+| where SHA256 in (TeslaC2Hashes)
+    or ProcessCommandLine has_any ("RTCore64.sys","cdn-telemetry-relaynn.online","cloud-dash.xyz","stratum+tcp","xmrig")
+    or (
+        FileName in~ ("procdump.exe","rundll32.exe")
+        and ProcessCommandLine has_any ("lsass","comsvcs.dll","MiniDump")
+    )
+    or (
+        FileName in~ ("regsvr32.exe")
+        and ProcessCommandLine has_any ("http://","https://",".sct","scrobj.dll")
+    )
+| extend DetectionSource="Process",SuspicionReason="Known TeslaC2 hash or high-signal behavior related to BYOVD, LSASS dumping, mining, C2, or suspicious regsvr32 usage"
+| project Timestamp,DeviceName,AccountName,DetectionSource,SuspicionReason,FileName,FolderPath,ProcessCommandLine,RemoteUrl="",RemoteIP="",SHA256
+)
+| sort by Timestamp desc
