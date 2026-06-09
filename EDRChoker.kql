@@ -1,0 +1,76 @@
+// Title: EDRChoker
+//
+// Description:
+// Hunt for suspicious Windows Policy-based QoS activity that may indicate
+// attempts to impair EDR telemetry by throttling or disrupting endpoint
+// security communication. This hunt focuses on QoS policy creation,
+// modification, deletion, netsh-based QoS activity, and QoS-related registry
+// changes.
+//
+// Source: https://www.zerosalarium.com/2026/06/edrchoker-choking-telemetry-stream-block-edr.html
+//
+// MITRE ATT&CK:
+// T1562.001 - Impair Defenses: Disable or Modify Tools
+// T1112     - Modify Registry
+// T1059.001 - Command and Scripting Interpreter: PowerShell
+// T1059.003 - Command and Scripting Interpreter: Windows Command Shell
+//
+// Expected Result:
+// Low. This query may return 0 results in a healthy environment.
+//
+// False Positive Notes:
+// - Get-NetQosPolicy was intentionally removed because it produced benign
+//   inventory/compliance noise.
+// - New-NetQosPolicy, Set-NetQosPolicy, and Remove-NetQosPolicy are higher
+//   signal because they create, modify, or remove QoS policies.
+// - Legitimate network engineering, endpoint management, or compliance tooling
+//   may modify QoS policies. Review account, parent process, device role, and
+//   change context before escalating.
+
+let Lookback=30d;
+union (
+DeviceProcessEvents
+| where Timestamp >= ago(Lookback)
+| where
+    ProcessCommandLine has_any (
+        "New-NetQosPolicy",
+        "Set-NetQosPolicy",
+        "Remove-NetQosPolicy"
+    )
+    or (
+        FileName =~ "netsh.exe"
+        and ProcessCommandLine has "qos"
+    )
+| extend DetectionSource="Process",
+         SuspicionReason="QoS policy creation, modification, deletion, or netsh QoS activity"
+| project Timestamp,
+          DeviceName,
+          AccountName,
+          DetectionSource,
+          SuspicionReason,
+          FileName,
+          FolderPath,
+          ProcessCommandLine,
+          RegistryKey="",
+          RegistryValueData=""
+),
+(
+DeviceRegistryEvents
+| where Timestamp >= ago(Lookback)
+| where
+    RegistryKey has @"\Policies\Microsoft\Windows\QoS"
+    or RegistryKey has @"\Microsoft\Windows\QoS"
+| extend DetectionSource="Registry",
+         SuspicionReason="QoS policy registry modification"
+| project Timestamp,
+          DeviceName,
+          AccountName=InitiatingProcessAccountName,
+          DetectionSource,
+          SuspicionReason,
+          FileName=InitiatingProcessFileName,
+          FolderPath=InitiatingProcessFolderPath,
+          ProcessCommandLine=InitiatingProcessCommandLine,
+          RegistryKey,
+          RegistryValueData
+)
+| sort by Timestamp desc
