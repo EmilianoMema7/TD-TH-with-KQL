@@ -1,0 +1,97 @@
+// Title: Bling Libra (ShinyHunters) Oracle PeopleSoft Post-Exploitation Hunt
+//
+// Description:
+// Hunt for post-exploitation activity associated with exploitation of Oracle
+// PeopleSoft (CVE-2026-35273). The hunt focuses on suspicious child processes
+// spawned by Java-based application servers together with known attacker
+// infrastructure and payload hashes. Tuned to reduce enterprise Java noise.
+//
+// Source: https://cloud.google.com/blog/topics/threat-intelligence/shinyhunters-targets-education-sector-oracle-exploit
+https://github.com/PaloAltoNetworks/Unit42-timely-threat-intel/blob/main/2026-06-11-Bling-Libra-targeting-Oracle-PeopleSoft-Servers.txt
+//
+// MITRE ATT&CK:
+// T1190      - Exploit Public-Facing Application
+// T1059.001  - Command and Scripting Interpreter: PowerShell
+// T1105      - Ingress Tool Transfer
+// T1071.001  - Application Layer Protocol: Web Protocols
+// T1219      - Remote Access Software
+// T1041      - Exfiltration Over C2 Channel
+//
+// Expected Result:
+// Very low. This query may return 0 results in a healthy environment.
+//
+// False Positive Notes:
+// - Legitimate Java applications frequently spawn cmd.exe for administration.
+//   cmd.exe was removed after tuning.
+// - Build pipelines, monitoring software, and enterprise Java applications
+//   generated significant noise during tuning.
+// - Investigate any Java process spawning PowerShell or LOLBins together with
+//   suspicious command-line activity or communication with known infrastructure.
+
+let Lookback = 30d;
+let MaliciousIPs = dynamic([
+"45.135.232.140","91.215.85.101","108.174.202.99","142.11.200.186",
+"142.11.200.187","142.11.200.188","142.11.200.189","142.11.200.190",
+"176.120.22.24","207.89.18.29"
+]);
+let MaliciousDomains = dynamic([
+"azurenetfiles.net",
+"bmwebhost.com",
+"onlinepaymentterminal.com",
+"paymentprocessterminal.com",
+"techvertix.com"
+]);
+let MaliciousHashes = dynamic([
+"9098906159e0e4c845eb918886fadc2723f2a321281b8003e471f09140321f91",
+"c7e9332731b06644fc73e0046a2a89eaa59b09f54250e9bd622467187351711f",
+"d65f14e5652a4330354826925dc56937334163656f24dd10f112c15bc7559de1"
+]);
+union
+(
+DeviceNetworkEvents
+| where Timestamp >= ago(Lookback)
+| where RemoteIP in (MaliciousIPs) or RemoteUrl has_any (MaliciousDomains)
+| extend DetectionSource="Network", SuspicionReason="Connection to known Bling Libra infrastructure"
+| project Timestamp,DetectionSource,SuspicionReason,
+          DeviceName,
+          AccountName=InitiatingProcessAccountName,
+          FileName=InitiatingProcessFileName,
+          FolderPath=InitiatingProcessFolderPath,
+          ProcessCommandLine=InitiatingProcessCommandLine,
+          RemoteUrl,RemoteIP,
+          SHA256=InitiatingProcessSHA256
+),
+(
+DeviceFileEvents
+| where Timestamp >= ago(Lookback)
+| where SHA256 in (MaliciousHashes)
+| extend DetectionSource="File", SuspicionReason="Known campaign payload observed"
+| project Timestamp,DetectionSource,SuspicionReason,
+          DeviceName,
+          AccountName=InitiatingProcessAccountName,
+          FileName,FolderPath,
+          ProcessCommandLine=InitiatingProcessCommandLine,
+          RemoteUrl="",RemoteIP="",SHA256
+),
+(
+DeviceProcessEvents
+| where Timestamp >= ago(Lookback)
+| where InitiatingProcessFileName in~ ("java.exe","javaw.exe","java")
+| where FileName in~ ("powershell.exe","pwsh.exe","mshta.exe","certutil.exe","bitsadmin.exe","curl.exe","rundll32.exe")
+| where ProcessCommandLine has_any (
+    "Invoke-WebRequest","DownloadString","-enc","EncodedCommand","certutil","bitsadmin","curl "
+)
+| extend DetectionSource="Process", SuspicionReason="Java application spawned a high-risk post-exploitation utility"
+| project Timestamp,DetectionSource,SuspicionReason,
+          DeviceName,
+          AccountName,
+          FileName,
+          FolderPath,
+          ProcessCommandLine,
+          InitiatingProcessFileName,
+          InitiatingProcessCommandLine,
+          RemoteUrl="",
+          RemoteIP="",
+          SHA256
+)
+| sort by Timestamp desc
