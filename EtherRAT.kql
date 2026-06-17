@@ -1,0 +1,166 @@
+// Title: EtherRAT Blockchain C2 & Node.js Persistence Hunt
+//
+// Description:
+// Hunt for behavioral indicators associated with EtherRAT, a Node.js-based RAT
+// that uses the Ethereum blockchain to dynamically resolve its command-and-control
+// infrastructure. The hunt prioritizes stable execution behaviors, persistence,
+// loader artifacts, and known infrastructure over volatile hashes.
+//
+// Source:
+// https://www.malwarebytes.com/blog/news/2026/06/etherrat-nodejs-rat-ethereum-blockchain
+// https://x.com/DFIR_Radar/status/2066884405264621870
+//
+// MITRE ATT&CK:
+// T1218.007 - Msiexec
+// T1059.003 - Windows Command Shell
+// T1059.007 - JavaScript
+// T1059.001 - PowerShell
+// T1547.001 - Registry Run Keys / Startup Folder
+// T1071.001 - Application Layer Protocol: Web Protocols
+// T1105 - Ingress Tool Transfer
+// T1082 - System Information Discovery
+// T1016 - System Network Configuration Discovery
+//
+// Expected Result:
+// Very low. This query may return 0 results in a healthy environment.
+//
+// False Positive Notes:
+// - Ethereum RPC endpoints are legitimate services and should not be treated as
+//   malicious by themselves.
+// - Prioritize investigation when Node.js or renamed executables under LocalAppData
+//   communicate with Ethereum RPC infrastructure or reference known EtherRAT artifacts.
+// - The initial hunt using MachineGuid and net session generated significant
+//   enterprise noise and those standalone indicators were removed after tuning.
+
+let Lookback = 30d;
+
+let EtherRATIPs = dynamic([
+"82.165.65.244",
+"185.221.216.121",
+"43.163.233.166"
+]);
+
+let EtherRATDomains = dynamic([
+"ivorilla.cloud",
+"dorqen.casa",
+"kelvra.club",
+"cambioefectivo.com",
+"tranzed.org",
+"kibrisarazi.com",
+"mainnet.gateway.tenderly.co"
+]);
+
+let EtherRATArtifacts = dynamic([
+"KmPuGimn.cmd",
+"cDQMlQAru0.xml",
+"MRaQCipBIZeiZNx.log",
+"_MJlLlt5.exe",
+"svchost.log",
+"28Q75h",
+"0x88ea8d0bc4146f0a018e989df3fd089ac48f9a58",
+"eth_call"
+]);
+
+union
+(
+DeviceNetworkEvents
+| where Timestamp >= ago(Lookback)
+| where RemoteIP in (EtherRATIPs)
+    or RemoteUrl has_any (EtherRATDomains)
+    or (RemoteUrl has "rpc.flashbots.net"
+        and InitiatingProcessFileName in~ ("node.exe","_MJlLlt5.exe","cmd.exe","wscript.exe","cscript.exe"))
+| extend DetectionSource="Network",
+         SuspicionReason="Connection to EtherRAT infrastructure or suspicious Ethereum RPC usage"
+| project Timestamp,
+          DeviceName,
+          AccountName=InitiatingProcessAccountName,
+          DetectionSource,
+          SuspicionReason,
+          FileName=InitiatingProcessFileName,
+          FolderPath=InitiatingProcessFolderPath,
+          ProcessCommandLine=InitiatingProcessCommandLine,
+          RemoteUrl,
+          RemoteIP,
+          SHA256=InitiatingProcessSHA256
+),
+(
+DeviceProcessEvents
+| where Timestamp >= ago(Lookback)
+| where ProcessCommandLine has_any (EtherRATArtifacts)
+    or (
+        FileName in~ ("node.exe","_MJlLlt5.exe")
+        and FolderPath has @"\AppData\Local\"
+        and ProcessCommandLine has_any (
+            "eth_call",
+            "mainnet.gateway.tenderly.co",
+            "rpc.flashbots.net",
+            "svchost.log",
+            "_MJlLlt5.exe",
+            "28Q75h"
+        )
+    )
+| extend DetectionSource="Process",
+         SuspicionReason="EtherRAT loader, persistence, or Ethereum RPC behavior"
+| project Timestamp,
+          DeviceName,
+          AccountName,
+          DetectionSource,
+          SuspicionReason,
+          FileName,
+          FolderPath,
+          ProcessCommandLine,
+          InitiatingProcessFileName,
+          InitiatingProcessCommandLine,
+          RemoteUrl="",
+          RemoteIP="",
+          SHA256
+),
+(
+DeviceRegistryEvents
+| where Timestamp >= ago(Lookback)
+| where RegistryKey has_any (
+@"\Software\Microsoft\Windows\CurrentVersion\Run",
+@"\Software\Microsoft\Windows\CurrentVersion\RunOnce"
+)
+| where RegistryValueData has_any (
+"_MJlLlt5.exe",
+"28Q75h",
+"svchost.log",
+"node.exe"
+)
+| extend DetectionSource="Registry",
+         SuspicionReason="Potential EtherRAT Run key persistence"
+| project Timestamp,
+          DeviceName,
+          AccountName=InitiatingProcessAccountName,
+          DetectionSource,
+          SuspicionReason,
+          FileName=InitiatingProcessFileName,
+          FolderPath=InitiatingProcessFolderPath,
+          ProcessCommandLine=InitiatingProcessCommandLine,
+          RegistryKey,
+          RegistryValueData,
+          RemoteUrl="",
+          RemoteIP="",
+          SHA256=InitiatingProcessSHA256
+),
+(
+DeviceFileEvents
+| where Timestamp >= ago(Lookback)
+| where FileName has_any (EtherRATArtifacts)
+    or FolderPath has_any ("28Q75h","_MJlLlt5.exe","svchost.log")
+| extend DetectionSource="File",
+         SuspicionReason="EtherRAT artifact observed"
+| project Timestamp,
+          DeviceName,
+          AccountName=InitiatingProcessAccountName,
+          DetectionSource,
+          SuspicionReason,
+          FileName,
+          FolderPath,
+          ProcessCommandLine=InitiatingProcessCommandLine,
+          RemoteUrl="",
+          RemoteIP="",
+          SHA256
+)
+| sort by Timestamp desc
