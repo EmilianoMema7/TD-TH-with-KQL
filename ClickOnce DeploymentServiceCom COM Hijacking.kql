@@ -1,0 +1,71 @@
+// Title: ClickOnce DeploymentServiceCom COM Hijacking Hunt
+//
+// Description:
+// Hunt for registry activity associated with abuse of Microsoft ClickOnce through
+// COM hijacking of the ClickOnce DeploymentServiceCom CLSID. The detection focuses
+// on the prerequisite registry modification required to redirect ClickOnce COM
+// activation to attacker-controlled code.
+//
+// Source:
+// https://www.crowdstrike.com/en-us/blog/new-abuse-of-the-clickonce-technology-part-two/
+//
+// MITRE ATT&CK:
+// T1546.015 - Event Triggered Execution: Component Object Model Hijacking
+// T1218.011 - System Binary Proxy Execution: Rundll32
+// T1204.002 - User Execution: Malicious File
+// T1547.009 - Boot or Logon Autostart Execution: Shortcut Modification
+//
+// Expected Result:
+// Very low. This query may return 0 results in a healthy environment.
+//
+// False Positive Notes:
+// - Normal ClickOnce execution through rundll32.exe, dfshim.dll, dfsvc.exe,
+//   .application files, and .appref-ms shortcuts generated significant legitimate
+//   enterprise noise during tuning.
+// - This query intentionally focuses on the prerequisite COM hijack registry
+//   activity rather than normal ClickOnce execution.
+// - Any result involving this CLSID under a user-writable registry location should
+//   be reviewed carefully, especially if LocalServer32 or InprocServer32 points to
+//   script interpreters, user profile paths, ProgramData, Temp, or other writable
+//   locations.
+
+let Lookback = 30d;
+let ClickOnceCLSID = "{20FD4E26-8E0F-4F73-A0E0-F27B8C57BE6F}";
+let SuspiciousTargets = dynamic([
+    "powershell.exe",
+    "pwsh.exe",
+    "cmd.exe",
+    "wscript.exe",
+    "cscript.exe",
+    "mshta.exe",
+    "rundll32.exe",
+    "regsvr32.exe",
+    "AppData",
+    "Temp",
+    "ProgramData",
+    "Users\\Public"
+]);
+
+DeviceRegistryEvents
+| where Timestamp >= ago(Lookback)
+| where RegistryKey has ClickOnceCLSID
+| extend SuspiciousTarget = RegistryValueData has_any (SuspiciousTargets)
+| extend DetectionSource = "Registry"
+| extend SuspicionReason = case(
+    SuspiciousTarget == true, "ClickOnce DeploymentServiceCom CLSID points to a suspicious interpreter or user-writable path",
+    "ClickOnce DeploymentServiceCom CLSID registry activity observed"
+)
+| project
+    Timestamp,
+    DeviceName,
+    AccountName = InitiatingProcessAccountName,
+    DetectionSource,
+    SuspicionReason,
+    RegistryKey,
+    RegistryValueName,
+    RegistryValueData,
+    SuspiciousTarget,
+    InitiatingProcessFileName,
+    InitiatingProcessCommandLine,
+    InitiatingProcessSHA256
+| sort by Timestamp desc
