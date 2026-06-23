@@ -1,0 +1,82 @@
+// Title: CrashFix / ModeloRAT MonitoringService Persistence and Finger Abuse Hunt
+//
+// Description:
+// Hunt for behaviors associated with the CrashFix / KongTuke campaign deploying ModeloRAT,
+// a Python-based RAT. This hunt focuses on two high-confidence behaviors observed during
+// analysis and tuning:
+// 1. Registry Run key persistence using "MonitoringService" with Python/WinPython artifacts.
+// 2. Suspicious use of finger.exe or renamed ct.exe from user-writable paths or suspicious
+//    command-line contexts.
+//
+// Source:
+// https://www.huntress.com/blog/malicious-browser-extention-crashfix-kongtuke
+//
+// MITRE ATT&CK:
+// T1547.001 - Boot or Logon Autostart Execution: Registry Run Keys / Startup Folder
+// T1059.006 - Command and Scripting Interpreter: Python
+// T1105     - Ingress Tool Transfer
+// T1218     - System Binary Proxy Execution
+// T1204.002 - User Execution: Malicious File
+//
+// Expected Result:
+// Very low. This query may return 0 results in a healthy environment.
+//
+// False Positive Notes:
+// - Generic python.exe/pythonw.exe execution was intentionally removed after tuning because
+//   developer tools, VS Code, automation tools, Google Cloud SDK, and RPA software generated
+//   significant legitimate activity.
+// - Generic PowerShell and reconnaissance commands were also removed because they produced
+//   unrelated administrative and automation noise.
+// - Results involving the MonitoringService Run key, pythonw.exe, modes.py, WinPython,
+//   or finger.exe/ct.exe from user-writable paths should be investigated carefully.
+
+let Lookback = 30d;
+
+let MonitoringServicePersistence =
+DeviceRegistryEvents
+| where Timestamp >= ago(Lookback)
+| where RegistryKey has @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+| where RegistryValueName =~ "MonitoringService"
+    or RegistryValueData has_any ("MonitoringService", "pythonw.exe", "modes.py", "WinPython")
+| extend DetectionType = "ModeloRAT MonitoringService Run Key Persistence"
+| project
+    Timestamp,
+    DeviceName,
+    AccountName = InitiatingProcessAccountName,
+    DetectionType,
+    FileName = InitiatingProcessFileName,
+    FolderPath = InitiatingProcessFolderPath,
+    ProcessCommandLine = InitiatingProcessCommandLine,
+    RegistryKey,
+    RegistryValueName,
+    RegistryValueData,
+    SHA256 = InitiatingProcessSHA256;
+
+let SuspiciousFingerAbuse =
+DeviceProcessEvents
+| where Timestamp >= ago(Lookback)
+| where FileName in~ ("finger.exe", "ct.exe")
+| where FolderPath has_any ("AppData", "Temp", "Users\\Public", "ProgramData")
+    or ProcessCommandLine has_any ("http", "https", "powershell", "cmd", "|", "ct.exe")
+    or InitiatingProcessFileName in~ ("powershell.exe", "cmd.exe", "wscript.exe", "cscript.exe")
+| extend DetectionType = "Suspicious finger.exe / ct.exe Abuse"
+| project
+    Timestamp,
+    DeviceName,
+    AccountName,
+    DetectionType,
+    FileName,
+    FolderPath,
+    ProcessCommandLine,
+    InitiatingProcessFileName,
+    InitiatingProcessFolderPath,
+    InitiatingProcessCommandLine,
+    RegistryKey = "",
+    RegistryValueName = "",
+    RegistryValueData = "",
+    SHA256;
+
+union
+MonitoringServicePersistence,
+SuspiciousFingerAbuse
+| sort by Timestamp desc
