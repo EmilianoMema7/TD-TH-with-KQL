@@ -1,0 +1,129 @@
+// Title: Prinz Eugen Ransomware Activity Hunt
+//
+// Description:
+// Hunt for high-confidence behaviors associated with Prinz Eugen ransomware activity.
+// The query focuses on campaign-specific and ransomware-relevant behaviors observed
+// in the intrusion chain:
+// - execution of servertool.exe
+// - creation of the local administrator account "admin" with password/context "germania"
+// - PowerShell launched from RemotePC context
+// - creation of files with the .prinzeugen ransomware extension
+//
+// Source:
+// https://www.threatdown.com/blog/prinz-eugen-ransomware-a-deep-dive-into-a-new-go-based-encryptor/
+//
+// MITRE ATT&CK:
+// T1078     - Valid Accounts
+// T1021.001 - Remote Services: Remote Desktop Protocol
+// T1219     - Remote Access Software
+// T1059.001 - Command and Scripting Interpreter: PowerShell
+// T1136.001 - Create Account: Local Account
+// T1486     - Data Encrypted for Impact
+//
+// Expected Result:
+// Very low. This query may return 0 results in a healthy environment.
+//
+// False Positive Notes:
+// - A generic self-deletion branch using cmd.exe + timeout/ping + del was removed after tuning,
+//   because legitimate updaters and uninstallers from HP, Adobe, ManageEngine, and other software
+//   produced similar behavior.
+// - RemotePC alone is not considered malicious. This hunt only highlights PowerShell activity
+//   initiated from RemotePC context.
+// - servertool.exe and .prinzeugen file extension hits should be treated as high-confidence
+//   investigation leads.
+
+let Lookback = 30d;
+
+let ServerToolExecution =
+DeviceProcessEvents
+| where Timestamp >= ago(Lookback)
+| where FileName =~ "servertool.exe"
+    or ProcessCommandLine has "servertool.exe"
+| extend DetectionType = "Prinz Eugen servertool.exe execution"
+| project
+    Timestamp,
+    DeviceName,
+    AccountName,
+    DetectionType,
+    FileName,
+    FolderPath,
+    ProcessCommandLine,
+    InitiatingProcessFileName,
+    InitiatingProcessFolderPath,
+    InitiatingProcessCommandLine,
+    SHA256,
+    RemoteUrl = "",
+    RemoteIP = "";
+
+let LocalAdminCreation =
+DeviceProcessEvents
+| where Timestamp >= ago(Lookback)
+| where FileName in~ ("net.exe", "net1.exe")
+| where ProcessCommandLine has_all ("user", "admin", "germania")
+    and ProcessCommandLine has "/add"
+| extend DetectionType = "Prinz Eugen local admin account creation"
+| project
+    Timestamp,
+    DeviceName,
+    AccountName,
+    DetectionType,
+    FileName,
+    FolderPath,
+    ProcessCommandLine,
+    InitiatingProcessFileName,
+    InitiatingProcessFolderPath,
+    InitiatingProcessCommandLine,
+    SHA256,
+    RemoteUrl = "",
+    RemoteIP = "";
+
+let RemotePCPowerShell =
+DeviceProcessEvents
+| where Timestamp >= ago(Lookback)
+| where FileName in~ ("powershell.exe", "pwsh.exe")
+| where InitiatingProcessFileName has_any ("RemotePC", "remotepc")
+    or InitiatingProcessFolderPath has_any ("RemotePC", "remotepc")
+    or InitiatingProcessCommandLine has_any ("RemotePC", "remotepc")
+| extend DetectionType = "PowerShell launched from RemotePC context"
+| project
+    Timestamp,
+    DeviceName,
+    AccountName,
+    DetectionType,
+    FileName,
+    FolderPath,
+    ProcessCommandLine,
+    InitiatingProcessFileName,
+    InitiatingProcessFolderPath,
+    InitiatingProcessCommandLine,
+    SHA256,
+    RemoteUrl = "",
+    RemoteIP = "";
+
+let PrinzEugenEncryptedFiles =
+DeviceFileEvents
+| where Timestamp >= ago(Lookback)
+| where FileName endswith ".prinzeugen"
+    or FolderPath has ".prinzeugen"
+| extend DetectionType = "Prinz Eugen encrypted file extension observed"
+| project
+    Timestamp,
+    DeviceName,
+    AccountName = InitiatingProcessAccountName,
+    DetectionType,
+    FileName,
+    FolderPath,
+    ProcessCommandLine = InitiatingProcessCommandLine,
+    InitiatingProcessFileName,
+    InitiatingProcessFolderPath,
+    InitiatingProcessCommandLine,
+    SHA256,
+    RemoteUrl = "",
+    RemoteIP = "";
+
+union
+ServerToolExecution,
+LocalAdminCreation,
+RemotePCPowerShell,
+PrinzEugenEncryptedFiles
+| sort by Timestamp desc
