@@ -1,0 +1,71 @@
+// Title: Winlogon Userinit/Shell Persistence From User-Writable Path
+//
+// Description:
+// Hunt for modification of Winlogon Userinit or Shell registry values by a process
+// running from a user-writable directory such as AppData, Temp, Users\Public, or
+// ProgramData. This behavior may indicate malware establishing logon persistence
+// through the Windows Winlogon mechanism.
+//
+// Source:
+// detections.ai rule: winlogon_userinit_shell_persistence_from_appdata_temp
+//
+// MITRE ATT&CK:
+// T1547.001 - Boot or Logon Autostart Execution: Registry Run Keys / Startup Folder
+// T1112     - Modify Registry
+//
+// Expected Result:
+// Very low. This query returned 0 results during telemetry validation in the tested environment.
+//
+// False Positive Notes:
+// - Legitimate software installers, endpoint management tools, or OS deployment tooling may
+//   modify Winlogon values, but they usually execute from Windows or Program Files locations.
+// - The query specifically focuses on modifications initiated from user-writable paths to reduce
+//   false positives.
+// - Any result should be reviewed carefully because Winlogon Userinit and Shell are sensitive
+//   persistence locations.
+
+let Lookback = 30d;
+
+let SuspiciousProcessPaths = dynamic([
+    @"\AppData\",
+    @"\Temp\",
+    @"\Users\Public\",
+    @"\ProgramData\"
+]);
+
+let SuspiciousValueData = dynamic([
+    "AppData",
+    "Temp",
+    "Users\\Public",
+    "ProgramData",
+    "cmd.exe",
+    "powershell.exe",
+    "pwsh.exe",
+    "wscript.exe",
+    "cscript.exe",
+    "rundll32.exe",
+    ".exe"
+]);
+
+DeviceRegistryEvents
+| where Timestamp >= ago(Lookback)
+| where RegistryKey has @"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
+| where RegistryValueName in~ ("Userinit", "Shell")
+| where InitiatingProcessFolderPath has_any (SuspiciousProcessPaths)
+| where InitiatingProcessAccountName !~ "SYSTEM"
+| extend SuspiciousValue = RegistryValueData has_any (SuspiciousValueData)
+| extend DetectionType = "Winlogon Userinit/Shell persistence from user-writable path"
+| project
+    Timestamp,
+    DeviceName,
+    AccountName = InitiatingProcessAccountName,
+    DetectionType,
+    RegistryKey,
+    RegistryValueName,
+    RegistryValueData,
+    SuspiciousValue,
+    FileName = InitiatingProcessFileName,
+    FolderPath = InitiatingProcessFolderPath,
+    ProcessCommandLine = InitiatingProcessCommandLine,
+    SHA256 = InitiatingProcessSHA256
+| sort by Timestamp desc
