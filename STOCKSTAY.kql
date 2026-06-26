@@ -1,0 +1,166 @@
+// Title: STOCKSTAY Component Execution and Persistence Hunt
+//
+// Description:
+// Hunt for high-confidence endpoint behaviors associated with STOCKSTAY, a Turla-linked
+// multi-component .NET backdoor described by Google/Mandiant. The hunt focuses on
+// component execution, file artifacts, registry Run persistence, and known C2 communication.
+//
+// Detection logic focuses on:
+// - STOCKSTAY component names such as MicrosoftUpdateOneDrive.exe, SMNet.exe, SMEditor.exe,
+//   StockMarketView.exe, and related components.
+// - Execution or file creation under the reported %LOCALAPPDATA%\Programs\SMN\ path.
+// - Registry Run persistence referencing STOCKSTAY components or the SMN directory.
+// - Network communication to known STOCKSTAY C2 domains.
+//
+// Source:
+// https://cloud.google.com/blog/topics/threat-intelligence/stockstay-turla-intelligence-gathering/
+//
+// MITRE ATT&CK:
+// T1059     - Command and Scripting Interpreter
+// T1105     - Ingress Tool Transfer
+// T1547.001 - Boot or Logon Autostart Execution: Registry Run Keys / Startup Folder
+// T1036     - Masquerading
+// T1071.001 - Application Layer Protocol: Web Protocols
+//
+// Expected Result:
+// Very low. This query returned 0 results after telemetry validation in the tested environment.
+//
+// False Positive Notes:
+// - Component names such as MicrosoftUpdateOneDrive.exe and the SMN directory should be uncommon
+//   in normal enterprise environments.
+// - Any hit on the registry Run key branch should be investigated carefully.
+// - Network hits to known C2 domains should be treated as high-confidence investigation leads.
+
+let Lookback = 30d;
+
+let StockstayNames = dynamic([
+    "MicrosoftUpdateOneDrive.exe",
+    "StockMarketView.exe",
+    "StockMarketNet.exe",
+    "StockMarketSystem.exe",
+    "SMEditor.exe",
+    "SMNet.exe",
+    "ViewPdf.exe",
+    "ConverterDDSNet.exe",
+    "ClientMNGR.exe",
+    "ClientMNGR2.exe",
+    "GR3.exe"
+]);
+
+let StockstayPaths = dynamic([
+    @"\AppData\Local\Programs\SMN\",
+    @"\LOCALAPPDATA\Programs\SMN\"
+]);
+
+let StockstayC2 = dynamic([
+    "wool-basalt-clock.glitch.me",
+    "weatherdataai.theworkpc.com",
+    "canal1zac1a.onrender.com",
+    "google-ai-labs-it.onrender.com",
+    "driverx86-adobe.onrender.com"
+]);
+
+let StockstayProcessExecution =
+DeviceProcessEvents
+| where Timestamp >= ago(Lookback)
+| where FileName in~ (StockstayNames)
+    or FolderPath has_any (StockstayPaths)
+    or ProcessCommandLine has_any (StockstayNames)
+| extend DetectionType = "STOCKSTAY component execution"
+| project
+    Timestamp,
+    DeviceName,
+    AccountName,
+    DetectionType,
+    FileName,
+    FolderPath,
+    ProcessCommandLine,
+    InitiatingProcessFileName,
+    InitiatingProcessFolderPath,
+    InitiatingProcessCommandLine,
+    SHA256,
+    RegistryKey = "",
+    RegistryValueName = "",
+    RegistryValueData = "",
+    RemoteUrl = "",
+    RemoteIP = "";
+
+let StockstayFileArtifacts =
+DeviceFileEvents
+| where Timestamp >= ago(Lookback)
+| where FileName in~ (StockstayNames)
+    or FolderPath has_any (StockstayPaths)
+| extend DetectionType = "STOCKSTAY file artifact"
+| project
+    Timestamp,
+    DeviceName,
+    AccountName = InitiatingProcessAccountName,
+    DetectionType,
+    FileName,
+    FolderPath,
+    ProcessCommandLine = InitiatingProcessCommandLine,
+    InitiatingProcessFileName,
+    InitiatingProcessFolderPath,
+    InitiatingProcessCommandLine,
+    SHA256,
+    RegistryKey = "",
+    RegistryValueName = "",
+    RegistryValueData = "",
+    RemoteUrl = FileOriginUrl,
+    RemoteIP = FileOriginIP;
+
+let StockstayRegistryPersistence =
+DeviceRegistryEvents
+| where Timestamp >= ago(Lookback)
+| where RegistryKey has @"Software\Microsoft\Windows\CurrentVersion\Run"
+| where RegistryValueData has_any (StockstayNames)
+    or RegistryValueData has_any (StockstayPaths)
+    or RegistryValueName has_any ("MicrosoftUpdateOneDrive", "StockMarket", "SMN")
+| extend DetectionType = "STOCKSTAY registry autorun persistence"
+| project
+    Timestamp,
+    DeviceName,
+    AccountName = InitiatingProcessAccountName,
+    DetectionType,
+    FileName = InitiatingProcessFileName,
+    FolderPath = InitiatingProcessFolderPath,
+    ProcessCommandLine = InitiatingProcessCommandLine,
+    InitiatingProcessFileName,
+    InitiatingProcessFolderPath,
+    InitiatingProcessCommandLine,
+    SHA256 = InitiatingProcessSHA256,
+    RegistryKey,
+    RegistryValueName,
+    RegistryValueData,
+    RemoteUrl = "",
+    RemoteIP = "";
+
+let StockstayNetwork =
+DeviceNetworkEvents
+| where Timestamp >= ago(Lookback)
+| where RemoteUrl has_any (StockstayC2)
+| extend DetectionType = "STOCKSTAY known C2 communication"
+| project
+    Timestamp,
+    DeviceName,
+    AccountName = InitiatingProcessAccountName,
+    DetectionType,
+    FileName = InitiatingProcessFileName,
+    FolderPath = InitiatingProcessFolderPath,
+    ProcessCommandLine = InitiatingProcessCommandLine,
+    InitiatingProcessFileName,
+    InitiatingProcessFolderPath,
+    InitiatingProcessCommandLine,
+    SHA256 = InitiatingProcessSHA256,
+    RegistryKey = "",
+    RegistryValueName = "",
+    RegistryValueData = "",
+    RemoteUrl,
+    RemoteIP;
+
+union
+StockstayProcessExecution,
+StockstayFileArtifacts,
+StockstayRegistryPersistence,
+StockstayNetwork
+| sort by Timestamp desc
