@@ -1,0 +1,167 @@
+// Title: ValleyRAT Persistence and Copied Payload Hunt
+//
+// Description:
+// Hunt for high-confidence endpoint behaviors associated with a ValleyRAT campaign
+// targeting Chinese and Japanese speakers. The campaign uses DLL sideloading with a
+// renamed legitimate VLC binary, copies payload components to
+// C:\Users\Public\Documents\res\, establishes Run key persistence using the value
+// name "pornhub", downloads an encrypted payload, and injects ValleyRAT into a
+// suspended rundll32.exe process.
+//
+// Detection logic focuses on:
+// - HKCU/HKLM Run key persistence referencing "pornhub", msword.exe, libvld.dll,
+//   or C:\Users\Public\Documents\res\.
+// - File artifacts msword.exe, libvld.dll, and xz.bin under
+//   C:\Users\Public\Documents\res\.
+// - Execution of msword.exe from the copied payload directory.
+// - rundll32.exe launched by msword.exe from the copied payload directory.
+// - Network communication to known ValleyRAT payload/C2 infrastructure.
+//
+// Source: https://www.levelblue.com/blogs/spiderlabs-blog/an-analysis-of-valleyrat-infection-campaigns-from-fake-installers-japanese-malicious-emails
+//
+// MITRE ATT&CK:
+// T1566.001 - Phishing: Spearphishing Attachment
+// T1204.002 - User Execution: Malicious File
+// T1574.002 - Hijack Execution Flow: DLL Side-Loading
+// T1547.001 - Boot or Logon Autostart Execution: Registry Run Keys / Startup Folder
+// T1055     - Process Injection
+// T1105     - Ingress Tool Transfer
+// T1218.011 - System Binary Proxy Execution: Rundll32
+//
+// Expected Result:
+// Very low. The rebuilt query returned 0 results during telemetry validation.
+//
+// False Positive Notes:
+// - The Run value name "pornhub" and the path C:\Users\Public\Documents\res\ are
+//   expected to be highly unusual in normal enterprise environments.
+// - msword.exe under C:\Users\Public\Documents\res\ should be treated as suspicious.
+// - Network hits to the listed infrastructure should be treated as enrichment and
+//   investigated together with endpoint behavior.
+
+let Lookback = 30d;
+
+let SuspiciousResPath = @"\Users\Public\Documents\res\";
+let ValleyRatDomains = dynamic([
+    "frehf.oss-cn-hongkong.aliyuncs.com"
+]);
+let ValleyRatIPs = dynamic([
+    "154.92.16.22"
+]);
+
+let ValleyRatRunKey =
+DeviceRegistryEvents
+| where Timestamp >= ago(Lookback)
+| where RegistryKey has @"Software\Microsoft\Windows\CurrentVersion\Run"
+| where RegistryValueName =~ "pornhub"
+    or RegistryValueData has SuspiciousResPath
+    or RegistryValueData has "msword.exe"
+    or RegistryValueData has "libvld.dll"
+| extend DetectionType = "ValleyRAT Run key persistence"
+| project
+    Timestamp,
+    DeviceName,
+    AccountName = InitiatingProcessAccountName,
+    DetectionType,
+    RegistryKey,
+    RegistryValueName,
+    RegistryValueData,
+    FileName = InitiatingProcessFileName,
+    FolderPath = InitiatingProcessFolderPath,
+    ProcessCommandLine = InitiatingProcessCommandLine,
+    SHA256 = InitiatingProcessSHA256,
+    RemoteUrl = "",
+    RemoteIP = "";
+
+let ValleyRatResArtifacts =
+DeviceFileEvents
+| where Timestamp >= ago(Lookback)
+| where FolderPath has SuspiciousResPath
+| where FileName in~ ("msword.exe", "libvld.dll", "xz.bin")
+    or FolderPath has_any ("msword.exe", "libvld.dll", "xz.bin")
+| extend DetectionType = "ValleyRAT copied payload artifact"
+| project
+    Timestamp,
+    DeviceName,
+    AccountName = InitiatingProcessAccountName,
+    DetectionType,
+    RegistryKey = "",
+    RegistryValueName = "",
+    RegistryValueData = "",
+    FileName,
+    FolderPath,
+    ProcessCommandLine = InitiatingProcessCommandLine,
+    SHA256,
+    RemoteUrl = FileOriginUrl,
+    RemoteIP = FileOriginIP;
+
+let ValleyRatPayloadExecution =
+DeviceProcessEvents
+| where Timestamp >= ago(Lookback)
+| where FileName =~ "msword.exe"
+| where FolderPath has SuspiciousResPath
+| extend DetectionType = "ValleyRAT copied payload execution"
+| project
+    Timestamp,
+    DeviceName,
+    AccountName,
+    DetectionType,
+    RegistryKey = "",
+    RegistryValueName = "",
+    RegistryValueData = "",
+    FileName,
+    FolderPath,
+    ProcessCommandLine,
+    SHA256,
+    RemoteUrl = "",
+    RemoteIP = "";
+
+let ValleyRatRundll32 =
+DeviceProcessEvents
+| where Timestamp >= ago(Lookback)
+| where FileName =~ "rundll32.exe"
+| where InitiatingProcessFileName =~ "msword.exe"
+    and InitiatingProcessFolderPath has SuspiciousResPath
+| extend DetectionType = "rundll32 launched from ValleyRAT payload context"
+| project
+    Timestamp,
+    DeviceName,
+    AccountName,
+    DetectionType,
+    RegistryKey = "",
+    RegistryValueName = "",
+    RegistryValueData = "",
+    FileName,
+    FolderPath,
+    ProcessCommandLine,
+    SHA256,
+    RemoteUrl = "",
+    RemoteIP = "";
+
+let ValleyRatNetwork =
+DeviceNetworkEvents
+| where Timestamp >= ago(Lookback)
+| where RemoteUrl has_any (ValleyRatDomains)
+    or RemoteIP in (ValleyRatIPs)
+| extend DetectionType = "ValleyRAT known payload/C2 network"
+| project
+    Timestamp,
+    DeviceName,
+    AccountName = InitiatingProcessAccountName,
+    DetectionType,
+    RegistryKey = "",
+    RegistryValueName = "",
+    RegistryValueData = "",
+    FileName = InitiatingProcessFileName,
+    FolderPath = InitiatingProcessFolderPath,
+    ProcessCommandLine = InitiatingProcessCommandLine,
+    SHA256 = InitiatingProcessSHA256,
+    RemoteUrl,
+    RemoteIP;
+
+union
+ValleyRatRunKey,
+ValleyRatResArtifacts,
+ValleyRatPayloadExecution,
+ValleyRatRundll32,
+ValleyRatNetwork
+| sort by Timestamp desc
