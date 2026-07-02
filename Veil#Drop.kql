@@ -1,0 +1,82 @@
+// Title: PowerShell Reflective .NET Loader With Reconnaissance
+//
+// Description:
+// Hunt for PowerShell script content that combines reflective .NET assembly loading
+// with process or system reconnaissance. This behavior is associated with fileless
+// loaders such as Veil#Drop delivering PureLog Stealer, where PowerShell loads a
+// .NET assembly in memory using reflection and then performs reconnaissance through
+// .NET classes, WMI, or Environment properties.
+//
+// Detection logic requires both:
+// - Reflective .NET assembly loading indicators.
+// - Process or system reconnaissance indicators.
+//
+// Source:
+// https://www.securonix.com/blog/veildrop-blogspot-hosted-powershell-loader/
+// https://detections.ai/inspirations/019f1f2d-2b68-732b-833e-117da41e33b8
+//
+// MITRE ATT&CK:
+// T1059.001 - Command and Scripting Interpreter: PowerShell
+// T1027     - Obfuscated Files or Information
+// T1057     - Process Discovery
+// T1082     - System Information Discovery
+// T1620     - Reflective Code Loading
+//
+// Expected Result:
+// Very low. This query returned 0 results during telemetry validation in the tested environment.
+//
+// Tuning Notes:
+// - This hunt intentionally uses DeviceEvents rather than DeviceProcessEvents because the
+//   detection depends on PowerShell script content, not only process command lines.
+// - The query requires reflection indicators and reconnaissance indicators together to reduce
+//   false positives from legitimate PowerShell administration or diagnostics.
+// - No joins, unions, or nested subqueries are required because DeviceEvents owns the relevant
+//   PowerShell script content telemetry.
+//
+// False Positive Notes:
+// - Legitimate administrative or security scripts may use .NET reflection or Environment
+//   properties, but the combination of reflective assembly loading and process/system
+//   reconnaissance should be uncommon.
+// - Investigate whether the script content includes decode/decrypt routines, downloaded
+//   payloads, or in-memory execution patterns such as Assembly.Load and EntryPoint invocation.
+
+let Lookback = 30d;
+
+DeviceEvents
+| where Timestamp >= ago(Lookback)
+| where ActionType has_any ("PowerShell", "ScriptContent", "Command")
+| extend ParsedFields = parse_json(AdditionalFields)
+| extend ScriptContent = tostring(coalesce(
+    ParsedFields.ScriptContent,
+    ParsedFields.Command,
+    ParsedFields.CommandLine,
+    ParsedFields.ScriptBlockText,
+    AdditionalFields
+))
+| where ScriptContent has_any (
+    "Reflection.Assembly.Load",
+    "Assembly.Load",
+    "[System.Reflection.Assembly]"
+)
+| where ScriptContent has_any (
+    "System.Diagnostics.Process",
+    "GetProcesses",
+    "Win32_Process",
+    "Environment.MachineName",
+    "Environment.UserName",
+    "Environment.OSVersion"
+)
+| extend DetectionType = "PowerShell reflective .NET loader with reconnaissance"
+| project
+    Timestamp,
+    DeviceName,
+    AccountName,
+    DetectionType,
+    ActionType,
+    FileName,
+    FolderPath,
+    ProcessCommandLine,
+    InitiatingProcessFileName,
+    InitiatingProcessCommandLine,
+    ScriptContent
+| sort by Timestamp desc
