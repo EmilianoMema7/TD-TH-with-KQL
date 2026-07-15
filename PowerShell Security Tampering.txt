@@ -1,0 +1,75 @@
+// Title: PowerShell Security Tampering via Defender Exclusion or UAC Registry Modification
+// Description:
+// Detects PowerShell, cmd, or reg.exe activity that adds Microsoft Defender exclusions
+// for user-writable paths or modifies UAC-related registry settings.
+// This detection focuses on reusable security-tampering behavior rather than
+// campaign-specific domains, filenames, or hashes.
+//
+// MITRE ATT&CK:
+// - T1562 - Impair Defenses
+// - T1112  - Modify Registry
+// - T1548  - Abuse Elevation Control Mechanism
+//
+// False Positive Notes:
+// Legitimate administrator scripts, software deployment tools, forensic tools,
+// backup agents, or security tooling may add Defender exclusions or configure UAC.
+// Review the initiating process, parent process, account context, and target path.
+//
+// Investigation Guidance:
+// - Review the full command line.
+// - Confirm whether the Defender exclusion targets broad user-writable paths.
+// - Check whether UAC values were weakened.
+// - Review parent process lineage.
+// - Look for nearby script downloads, archive extraction, payload execution,
+//   Run key persistence, or suspicious network activity.
+
+let Lookback = 30d;
+let UserWritablePaths = dynamic([
+    "appdata",
+    "%appdata%",
+    "$env:appdata",
+    "\\users\\public\\",
+    "\\programdata\\",
+    "\\windows\\temp\\",
+    "\\temp\\",
+    "\\downloads\\"
+]);
+DeviceProcessEvents
+| where Timestamp >= ago(Lookback)
+| where FileName in~ ("powershell.exe", "pwsh.exe", "cmd.exe", "reg.exe")
+    or InitiatingProcessFileName in~ ("powershell.exe", "pwsh.exe", "cmd.exe", "reg.exe")
+| extend CommandLine = strcat(ProcessCommandLine, " ", InitiatingProcessCommandLine)
+| where
+    (
+        CommandLine has_any ("Add-MpPreference", "Set-MpPreference")
+        and CommandLine has "ExclusionPath"
+        and CommandLine has_any (UserWritablePaths)
+    )
+    or
+    (
+        CommandLine has_any (
+            "EnableLUA",
+            "ConsentPromptBehaviorAdmin",
+            "ConsentPromptBehaviorUser",
+            "PromptOnSecureDesktop"
+        )
+        and CommandLine has_any (
+            "reg add",
+            "Set-ItemProperty",
+            "New-ItemProperty"
+        )
+    )
+| project
+    Timestamp,
+    ActionType,
+    FileName,
+    ProcessCommandLine,
+    FolderPath,
+    AccountName,
+    InitiatingProcessFileName,
+    InitiatingProcessCommandLine,
+    InitiatingProcessFolderPath,
+    InitiatingProcessAccountName,
+    InitiatingProcessParentFileName,
+    SHA256
+| order by Timestamp desc
