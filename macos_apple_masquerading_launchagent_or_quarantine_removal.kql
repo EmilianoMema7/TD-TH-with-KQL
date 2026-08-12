@@ -1,0 +1,76 @@
+// Title: macOS Apple-Masquerading LaunchAgent or Quarantine Removal
+// Description:
+// Detects suspicious macOS activity where com.apple.*-named artifacts under user Library
+// locations are used with launchctl bootstrap or xattr quarantine removal.
+// This behavior was documented in a macOS crypto-draining malware campaign and was
+// baseline-validated against 30 days of Defender XDR telemetry with zero matches.
+//
+// MITRE ATT&CK:
+// - T1036.005 Masquerading: Match Legitimate Name or Location
+// - T1543.001 Create or Modify System Process: Launch Agent
+// - T1553.001 Subvert Trust Controls: Gatekeeper Bypass
+//
+// Expected Result:
+// Low-volume events indicating Apple-masquerading persistence or quarantine removal
+// from user-controlled macOS Library locations.
+//
+// False Positive Notes:
+// Legitimate software may use com.apple.* naming, but the combination of:
+//   1. com.apple.* artifact naming,
+//   2. user Library/Caches or Library/LaunchAgents paths, and
+//   3. launchctl bootstrap or xattr quarantine removal
+// was not observed in the 30-day enterprise baseline used for validation.
+//
+// Investigation Guidance:
+// - Review the full process ancestry and Terminal/shell activity before the event.
+// - Inspect the referenced plist or executable path.
+// - Check whether the artifact was recently downloaded or created.
+// - Review nearby curl/wget/bash/zsh activity and outbound network connections.
+// - Validate code-signing/notarization status and file hash reputation.
+// - Hunt for sibling com.apple.* artifacts under the same user Library tree.
+//
+// Tuning Notes:
+// - Avoid broad exclusions for xattr or launchctl; both are common.
+// - Tune only after confirming recurring legitimate software in the same path/name pattern.
+// - Do not generalize to all com.apple.* artifacts without the user-writable path constraint.
+//
+// Initiating Article:
+// Huntress - macOS crypto-draining malware campaign
+// https://www.huntress.com/blog/mac-crypto-draining-malware
+
+let Lookback = 30d;
+DeviceProcessEvents
+| where Timestamp >= ago(Lookback)
+| where
+    (
+        FileName =~ "xattr"
+        and ProcessCommandLine has "com.apple.quarantine"
+        and ProcessCommandLine has "/Library/Caches/com.apple."
+    )
+    or
+    (
+        FileName =~ "launchctl"
+        and ProcessCommandLine has "bootstrap"
+        and ProcessCommandLine has "Library/LaunchAgents"
+        and ProcessCommandLine has "com.apple."
+    )
+| extend DetectionReason = case(
+    FileName =~ "xattr",
+        "Quarantine removal from Apple-masquerading cache path",
+    FileName =~ "launchctl",
+        "Apple-masquerading LaunchAgent bootstrap",
+    "Other"
+)
+| project
+    Timestamp,
+    DetectionReason,
+    FileName,
+    FolderPath,
+    ProcessCommandLine,
+    InitiatingProcessFileName,
+    InitiatingProcessCommandLine,
+    InitiatingProcessFolderPath,
+    InitiatingProcessAccountName,
+    InitiatingProcessParentFileName,
+    SHA256
+| order by Timestamp desc
