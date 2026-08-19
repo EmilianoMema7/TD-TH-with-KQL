@@ -1,0 +1,60 @@
+// Title: Suspicious System-Named DLL Staged in User OneDrive Directory
+//
+// Description:
+// Detects creation of DLLs with Windows system-library names directly under the
+// per-user Microsoft OneDrive installation tree. C2Looper was observed downloading
+// wtsapi32.dll into %LocalAppData%\Microsoft\OneDrive\ and then abusing a legitimate
+// OneDrive executable to side-load the malicious DLL.
+//
+// MITRE ATT&CK:
+// - T1574.002 Hijack Execution Flow: DLL Side-Loading
+// - T1036 Masquerading (supporting context)
+//
+// False Positive Notes:
+// Legitimate OneDrive updates may create DLLs under the OneDrive installation tree.
+// However, common Windows system-library names directly under the user OneDrive path
+// were not observed in the 30-day baseline used for validation.
+// Investigate before adding exclusions.
+//
+// Investigation Guidance:
+// - Review the initiating process and full process ancestry.
+// - Check whether the DLL was created shortly before OneDrive.exe or another OneDrive
+//   binary executed from the same directory.
+// - Verify file signature, signer, prevalence, and hash reputation.
+// - Review nearby OneDrive termination/restart activity.
+// - Hunt for subsequent process creation, payload staging, or outbound C2 traffic.
+// - Check for C2Looper-related reconnaissance commands and GitHub JSON C2 artifacts.
+//
+// Initiating Article:
+// Zscaler ThreatLabz - C2Looper: New Backdoor Likely Tied to Ransomware, GitHub C2
+// https://www.zscaler.com/blogs/security-research/c2looper-new-backdoor-likely-tied-ransomware-github-c2
+
+let Lookback = 30d;
+let SuspiciousSystemDllNames = dynamic([
+    "wtsapi32.dll",
+    "version.dll",
+    "winhttp.dll",
+    "wininet.dll",
+    "cryptbase.dll",
+    "dbghelp.dll",
+    "profapi.dll",
+    "secur32.dll",
+    "netutils.dll"
+]);
+DeviceFileEvents
+| where Timestamp >= ago(Lookback)
+| where FileName in~ (SuspiciousSystemDllNames)
+| where FolderPath has @"\AppData\Local\Microsoft\OneDrive\"
+| project
+    Timestamp,
+    ActionType,
+    FileName,
+    FolderPath,
+    SHA256,
+    InitiatingProcessFileName,
+    InitiatingProcessCommandLine,
+    InitiatingProcessFolderPath,
+    InitiatingProcessAccountName,
+    InitiatingProcessParentFileName,
+    InitiatingProcessSHA256
+| order by Timestamp desc
