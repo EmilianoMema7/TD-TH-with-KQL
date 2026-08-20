@@ -1,0 +1,73 @@
+// Title: Headless CDP Browser Communicating with Cloudflare Workers
+//
+// Description:
+// Detects Chrome or Microsoft Edge launched in headless mode with Chrome DevTools
+// Protocol (CDP) remote debugging enabled, followed by communication to a
+// *.workers.dev destination within 10 minutes on the same device.
+//
+// This behavior was documented in the Chaos ransomware group's msaRAT campaign,
+// where the malware controls a headless browser over localhost and uses the browser
+// to establish covert C2 through Cloudflare Workers/WebRTC while the RAT itself
+// avoids direct external communication.
+//
+// MITRE ATT&CK:
+// - T1102.002 Web Service: Bidirectional Communication
+// - T1219 Remote Access Software / browser-mediated remote control context
+// - T1059.007 Command and Scripting Interpreter: JavaScript (campaign context)
+// - T1071.001 Application Layer Protocol: Web Protocols
+//
+// False Positive Notes:
+// Legitimate browser automation frameworks may launch Chrome/Edge with headless/CDP flags.
+// Cloudflare Workers is also widely used legitimately.
+// The detection intentionally requires both behaviors within a short time window.
+// Investigate any recurring sanctioned automation before adding exclusions.
+//
+// Investigation Guidance:
+// - Review the root browser parent process and command line.
+// - Identify the exact workers.dev hostname and validate its business purpose.
+// - Review localhost connections to the browser's debugging port.
+// - Inspect nearby JavaScript automation, curl, MSI, or DLL activity.
+// - Check for WebRTC/TURN traffic, including Twilio TURN infrastructure.
+// - Hunt for recent MSI staging, unusual DLL loads, or msaRAT-related files/hashes.
+// - Review browser child-process network activity because external C2 may originate
+//   from a renderer/network child rather than the root browser process.
+//
+// Initiating Article:
+// Cisco Talos - Chaos msaRAT: Living off the Browser to Build a Covert C2 Channel
+// https://blog.talosintelligence.com/chaos-msarat-living-off-the-browser-to-build-covert-c2-channel/
+
+let Lookback = 30d;
+let CDPBrowsers =
+    DeviceProcessEvents
+    | where Timestamp >= ago(Lookback)
+    | where FileName in~ ("chrome.exe", "msedge.exe")
+    | where ProcessCommandLine has "--headless"
+    | where ProcessCommandLine has "--remote-debugging"
+    | where ProcessCommandLine !has "--type="
+    | project
+        DeviceId,
+        BrowserStart = Timestamp,
+        BrowserFileName = FileName,
+        BrowserCommandLine = ProcessCommandLine,
+        BrowserParent = InitiatingProcessFileName;
+
+DeviceNetworkEvents
+| where Timestamp >= ago(Lookback)
+| where InitiatingProcessFileName in~ ("chrome.exe", "msedge.exe")
+| where RemoteUrl endswith ".workers.dev"
+    or RemoteUrl has ".workers.dev/"
+| join kind=inner CDPBrowsers on DeviceId
+| where Timestamp >= BrowserStart
+| where Timestamp <= BrowserStart + 10m
+| project
+    Timestamp,
+    BrowserStart,
+    BrowserFileName,
+    BrowserCommandLine,
+    BrowserParent,
+    RemoteUrl,
+    RemoteIP,
+    RemotePort,
+    InitiatingProcessFileName,
+    InitiatingProcessCommandLine
+| order by Timestamp desc
