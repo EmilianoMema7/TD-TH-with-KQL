@@ -1,0 +1,68 @@
+// Title: Rust Build Tooling Spawning Script Interpreter or Temp-Staged Payload
+//
+// Description:
+// Detects cargo or rustc spawning a script interpreter, or launching a child process
+// from a temporary path. This behavior was observed in a malicious Rust crate
+// supply-chain attack where build-time code downloaded and executed follow-on payloads.
+//
+// MITRE ATT&CK:
+// - T1195.002 Supply Chain Compromise: Compromise Software Supply Chain
+// - T1059 Command and Scripting Interpreter
+// - T1105 Ingress Tool Transfer
+//
+// False Positive Notes:
+// Some legitimate build systems, developer tooling, or custom build scripts may invoke
+// shell/script interpreters or temporary executables from Rust build processes.
+// Investigate recurring sanctioned build workflows before adding exclusions.
+//
+// Investigation Guidance:
+// - Review the cargo/rustc parent and child command lines.
+// - Inspect the child file path, signer, hash, and prevalence.
+// - Check whether the child was recently created in Temp/AppData/Local/Temp or /tmp.
+// - Review nearby network connections from cargo/rustc or the child process.
+// - Hunt for recently modified Cargo.toml/Cargo.lock files and unusual dependencies.
+// - Review package installation/build history and CI/CD execution context.
+// - Check for campaign artifacts such as rust-setup.ps1, rust-setup-launch.vbs,
+//   /tmp/rust-setup, or communication with known campaign infrastructure.
+//
+// Initiating Article:
+// Wiz - Rust Supply Chain Attack on arrayref: Significant Overlap with DPRK Campaigns
+// https://www.wiz.io/blog/rust-supply-chain-attack-on-arrayref-significant-overlap-with-dprk-campaigns
+
+let Lookback = 30d;
+DeviceProcessEvents
+| where Timestamp >= ago(Lookback)
+| where InitiatingProcessFileName in~ (
+    "cargo.exe",
+    "rustc.exe",
+    "cargo",
+    "rustc"
+)
+| where
+    FileName in~ (
+        "wscript.exe",
+        "cscript.exe",
+        "powershell.exe",
+        "pwsh.exe",
+        "cmd.exe",
+        "sh",
+        "bash"
+    )
+    or FolderPath has_any (
+        @"\Temp\",
+        @"\AppData\Local\Temp\",
+        "/tmp/"
+    )
+| project
+    Timestamp,
+    FileName,
+    FolderPath,
+    ProcessCommandLine,
+    AccountName,
+    SHA256,
+    InitiatingProcessFileName,
+    InitiatingProcessCommandLine,
+    InitiatingProcessFolderPath,
+    InitiatingProcessAccountName,
+    InitiatingProcessParentFileName
+| order by Timestamp desc
