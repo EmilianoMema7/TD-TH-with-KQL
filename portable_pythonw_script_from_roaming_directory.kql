@@ -1,0 +1,49 @@
+// Title: Portable Pythonw Executing Script from User Roaming Directory
+//
+// Description:
+// Detects pythonw.exe executing a Python script from the user's AppData\Roaming tree.
+// This behavior was observed in the SynkLoader campaign, where a portable Python
+// runtime was extracted beneath a random Roaming directory and used to execute ss.py.
+//
+// MITRE ATT&CK:
+// - T1059.006 Command and Scripting Interpreter: Python
+// - T1036 Masquerading (supporting context)
+// - T1105 Ingress Tool Transfer (campaign context)
+//
+// False Positive Notes:
+// Portable Python environments or user-installed automation tooling may legitimately
+// execute scripts from AppData\Roaming. Investigate the runtime path, script path,
+// signer, hash prevalence, and parent process before adding exclusions.
+//
+// Investigation Guidance:
+// - Review the pythonw.exe path and whether the directory name appears random/unusual.
+// - Confirm whether the referenced .py script resides in the same Roaming staging tree.
+// - Review the initiating process and nearby PowerShell/MSI activity.
+// - Check file creation events for the Python runtime and script shortly before execution.
+// - Review outbound network activity from pythonw.exe and its child processes.
+// - Hunt for scheduled-task persistence or repeated execution from the same staging path.
+// - Check for SynkLoader-specific artifacts such as ss.py and cleaner.ps1.
+//
+// Initiating Article:
+// Expel - SynkLoader: when you throw in everything but the kitchen sink
+// https://expel.com/blog/synkloader-when-you-throw-in-everything-but-the-kitchen-sink/
+
+let Lookback = 30d;
+DeviceProcessEvents
+| where Timestamp >= ago(Lookback)
+| where FileName =~ "pythonw.exe"
+| where FolderPath has @"\AppData\Roaming\"
+| where ProcessCommandLine contains ".py"
+| where ProcessCommandLine has @"\AppData\Roaming\"
+| project
+    Timestamp,
+    FileName,
+    FolderPath,
+    ProcessCommandLine,
+    SHA256,
+    InitiatingProcessFileName,
+    InitiatingProcessCommandLine,
+    InitiatingProcessFolderPath,
+    InitiatingProcessAccountName,
+    InitiatingProcessParentFileName
+| order by Timestamp desc
