@@ -1,0 +1,77 @@
+// Title: macOS Temporary Payload Preparation with xattr and chmod
+//
+// Description:
+// Detects a macOS endpoint where xattr clears extended attributes from a temporary
+// payload and chmod subsequently makes a temporary payload executable within five
+// minutes. This behavior was observed in a fake Codex ClickFix campaign where the
+// downloaded payload was staged in /tmp, stripped of extended attributes, marked
+// executable, and then launched.
+//
+// MITRE ATT&CK:
+// - T1553.001 Subvert Trust Controls: Gatekeeper Bypass
+// - T1222.002 File and Directory Permissions Modification: Linux and Mac File and Directory Permissions Modification
+// - T1059.004 Command and Scripting Interpreter: Unix Shell
+//
+// False Positive Notes:
+// Legitimate developer, installer, packaging, and automation workflows can use xattr
+// or chmod in temporary directories. Investigate recurring sanctioned workflows
+// before adding exclusions. The rule intentionally requires both behaviors within
+// a short window to reduce noise.
+//
+// Investigation Guidance:
+// - Review both command lines and their parent processes.
+// - Confirm whether xattr and chmod reference the same or closely related temporary payload.
+// - Look for preceding curl/wget activity, shell execution, Base64 decoding, or piped commands.
+// - Check whether the prepared file executed shortly after the chmod event.
+// - Review the file hash, code-signing/notarization state, and prevalence.
+// - Inspect outbound network activity from the prepared payload and its descendants.
+// - Hunt for additional ClickFix artifacts or suspicious Terminal/zsh activity.
+//
+// Initiating Article:
+// Cato Networks - When Trust Becomes the Payload in a Fake Codex ClickFix Campaign
+// https://www.catonetworks.com/blog/cato-ctrl-when-trust-becomes-payload-in-fake-codex-clickfix-campaign/
+
+let Lookback = 30d;
+
+let XattrEvents =
+    DeviceProcessEvents
+    | where Timestamp >= ago(Lookback)
+    | where FileName =~ "xattr"
+    | where ProcessCommandLine has "-c"
+    | where ProcessCommandLine has_any (
+        "/private/tmp/",
+        "/var/folders/"
+    )
+    | project
+        DeviceId,
+        XattrTime = Timestamp,
+        XattrCommand = ProcessCommandLine,
+        XattrParent = InitiatingProcessFileName;
+
+let ChmodEvents =
+    DeviceProcessEvents
+    | where Timestamp >= ago(Lookback)
+    | where FileName =~ "chmod"
+    | where ProcessCommandLine has_any ("+x", "755")
+    | where ProcessCommandLine has_any (
+        "/private/tmp/",
+        "/var/folders/"
+    )
+    | project
+        DeviceId,
+        ChmodTime = Timestamp,
+        ChmodCommand = ProcessCommandLine,
+        ChmodParent = InitiatingProcessFileName;
+
+XattrEvents
+| join kind=inner ChmodEvents on DeviceId
+| where ChmodTime >= XattrTime
+| where ChmodTime <= XattrTime + 5m
+| project
+    XattrTime,
+    XattrCommand,
+    XattrParent,
+    ChmodTime,
+    ChmodCommand,
+    ChmodParent
+| order by XattrTime desc
