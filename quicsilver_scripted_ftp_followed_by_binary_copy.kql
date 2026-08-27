@@ -1,0 +1,51 @@
+// Title: Scripted FTP Followed by Binary Payload Reconstruction
+// Description: Detects ftp.exe launched with the -s: option to execute a local FTP command script, followed on the same device by cmd.exe using copy /b within 10 minutes. This sequence reflects the QUICSILVER delivery chain in which scripted FTP activity is followed by binary payload reconstruction.
+// MITRE ATT&CK: T1105 - Ingress Tool Transfer
+// MITRE ATT&CK: T1140 - Deobfuscate/Decode Files or Information
+// False Positives: Legacy or administrative workflows that use scripted ftp.exe and then concatenate files with copy /b within a short time window. Validate the FTP script, parent process, source files, destination file, and resulting execution context.
+// Investigation Guidance: Review the script passed to ftp.exe -s:, the initiating process chain, network destinations contacted by ftp.exe, the files referenced by copy /b, the output file created, and any subsequent execution or persistence activity.
+// Source Article: Seqrite - Operation QUICSILVER: China-Nexus Actor Targets Myanmar Diplomats via VHD-Delivered Go Backdoor
+// https://www.seqrite.com/blog/operation-quicsilver-china-nexus-actor-targets-myanmar-diplomats-via-vhd-delivered-go-backdoor/
+
+let Lookback = 30d;
+
+let ScriptedFTP =
+    DeviceProcessEvents
+    | where Timestamp >= ago(Lookback)
+    | where FileName =~ "ftp.exe"
+    | where ProcessCommandLine contains "-s:"
+    | project
+        DeviceId,
+        FTPTime = Timestamp,
+        FTPCommandLine = ProcessCommandLine,
+        FTPParent = InitiatingProcessFileName,
+        FTPParentCommandLine = InitiatingProcessCommandLine;
+
+let BinaryCopy =
+    DeviceProcessEvents
+    | where Timestamp >= ago(Lookback)
+    | where FileName =~ "cmd.exe"
+    | where ProcessCommandLine contains "copy"
+    | where ProcessCommandLine contains "/b"
+    | project
+        DeviceId,
+        CopyTime = Timestamp,
+        CopyCommandLine = ProcessCommandLine,
+        CopyParent = InitiatingProcessFileName,
+        CopyParentCommandLine = InitiatingProcessCommandLine;
+
+ScriptedFTP
+| join kind=inner BinaryCopy on DeviceId
+| where CopyTime >= FTPTime
+| where CopyTime <= FTPTime + 10m
+| project
+    FTPTime,
+    CopyTime,
+    DeviceId,
+    FTPCommandLine,
+    FTPParent,
+    FTPParentCommandLine,
+    CopyCommandLine,
+    CopyParent,
+    CopyParentCommandLine
+| order by FTPTime desc
