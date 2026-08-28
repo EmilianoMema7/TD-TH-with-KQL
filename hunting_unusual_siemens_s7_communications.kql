@@ -1,0 +1,82 @@
+// Title: Hunting for Unusual Siemens S7 Communications in Microsoft Defender XDR
+//
+// Description:
+// Threat-hunting query for identifying low-prevalence endpoint/process relationships communicating
+// with remote systems over TCP/102 (commonly associated with Siemens S7 / ISO-on-TCP).
+//
+// This is intentionally a HUNTING query, not a production detection rule.
+// The goal is to baseline legitimate OT/engineering activity and surface rare relationships for review.
+//
+// Source:
+// CISA - Defending Against an Active Threat to Siemens S7 Series PLCs
+// https://www.cisa.gov/news-events/cybersecurity-advisories/aa26-231a
+//
+// Investigation guidance:
+// - Validate whether the source device is an expected engineering, SCADA, OT, monitoring, or scanner system.
+// - Review the initiating process path and command line.
+// - Confirm whether the remote IP is a known PLC / OT asset.
+// - Investigate low-frequency device/process -> PLC relationships before treating them as suspicious.
+// - Do not treat RemotePort == 102 alone as malicious.
+// - Prefer events with an attributed initiating process.
+//
+// Notes:
+// During validation, legitimate TCP/102 activity was observed from Siemens engineering/SCADA software,
+// OT middleware, PLC collectors, vulnerability scanners, and other industrial tooling.
+// Low prevalence is a hunting lead, not proof of malicious activity.
+
+let Lookback = 30d;
+
+let S7Traffic =
+    DeviceNetworkEvents
+    | where Timestamp >= ago(Lookback)
+    | where RemotePort == 102
+    | where isnotempty(InitiatingProcessFileName)
+    | project
+        Timestamp,
+        DeviceName,
+        LocalIP,
+        RemoteIP,
+        RemotePort,
+        ActionType,
+        InitiatingProcessFileName,
+        InitiatingProcessFolderPath,
+        InitiatingProcessCommandLine;
+
+let ProcessPrevalence =
+    S7Traffic
+    | summarize
+        ProcessEvents = count(),
+        ProcessDevices = dcount(DeviceName),
+        ProcessRemoteIPs = dcount(RemoteIP)
+        by InitiatingProcessFileName, InitiatingProcessFolderPath;
+
+S7Traffic
+| summarize
+    Events = count(),
+    FirstSeen = min(Timestamp),
+    LastSeen = max(Timestamp),
+    SuccessfulConnections = countif(ActionType == "ConnectionSuccess")
+    by
+        DeviceName,
+        LocalIP,
+        RemoteIP,
+        InitiatingProcessFileName,
+        InitiatingProcessFolderPath,
+        InitiatingProcessCommandLine
+| join kind=leftouter ProcessPrevalence
+    on InitiatingProcessFileName, InitiatingProcessFolderPath
+| project
+    DeviceName,
+    LocalIP,
+    RemoteIP,
+    Events,
+    SuccessfulConnections,
+    FirstSeen,
+    LastSeen,
+    InitiatingProcessFileName,
+    InitiatingProcessFolderPath,
+    InitiatingProcessCommandLine,
+    ProcessEvents,
+    ProcessDevices,
+    ProcessRemoteIPs
+| order by ProcessDevices asc, Events asc
