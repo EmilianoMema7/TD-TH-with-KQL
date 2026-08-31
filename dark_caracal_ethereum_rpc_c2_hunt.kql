@@ -1,0 +1,62 @@
+// Title: Unusual Process Communication with Public Ethereum RPC Infrastructure
+//
+// Description:
+// Threat-hunting query for identifying endpoint processes communicating with public Ethereum
+// JSON-RPC infrastructure. This behavior can be used legitimately by browsers, wallets,
+// developer tooling, and security products, but it is also relevant to GoCaracal's documented
+// fallback C2-resilience mechanism, which queries Ethereum smart-contract storage for a
+// replacement command-and-control address after repeated primary C2 failures.
+//
+// Classification: Accepted — Hunting Query
+// This is intentionally not a production detection rule. Process-to-RPC relationships are
+// environment-specific and require analyst validation.
+//
+// MITRE ATT&CK:
+// T1102.003 - Web Service: One-Way Communication
+// T1071.001 - Application Layer Protocol: Web Protocols
+//
+// False-positive / baseline guidance:
+// Expected activity may include browsers, cryptocurrency wallets, blockchain applications,
+// developer tooling, automation, and security products. Prioritize rare or previously unseen
+// standalone executables, unusual user-writable paths, and processes with no business reason
+// to access public Ethereum infrastructure.
+//
+// Investigation guidance:
+// - Validate the process signer, prevalence, path, command line, parent, and SHA256.
+// - Determine whether the device/user has a legitimate blockchain-related use case.
+// - Review nearby network activity for failed primary C2 connections followed by new outbound
+//   infrastructure shortly after the Ethereum RPC access.
+// - Review process/file activity for additional payload execution, persistence, credential theft,
+//   or remote-shell behavior.
+// - If HTTP-layer telemetry is available elsewhere, look specifically for Ethereum JSON-RPC
+//   methods such as eth_getStorageAt.
+//
+// Source Article:
+// Arctic Wolf Labs - Dark Caracal Reloaded: New Malware, Same Hunting Grounds
+// https://arcticwolf.com/resources/blog/dark-caracal-reloaded-new-malware-same-hunting-grounds/
+
+let Lookback = 30d;
+let EthereumRpcDomains = dynamic([
+    "infura.io",
+    "alchemy.com",
+    "ankr.com",
+    "cloudflare-eth.com",
+    "ethereum.publicnode.com",
+    "eth.llamarpc.com"
+]);
+DeviceNetworkEvents
+| where Timestamp >= ago(Lookback)
+| where RemoteUrl has_any (EthereumRpcDomains)
+| where isnotempty(InitiatingProcessFileName)
+| summarize
+    Events = count(),
+    Devices = dcount(DeviceName),
+    FirstSeen = min(Timestamp),
+    LastSeen = max(Timestamp),
+    RemoteIPs = make_set(RemoteIP, 10),
+    RemoteUrls = make_set(RemoteUrl, 10),
+    SampleCommandLines = make_set(InitiatingProcessCommandLine, 5)
+    by
+        InitiatingProcessFileName,
+        InitiatingProcessFolderPath
+| order by Devices asc, Events asc
